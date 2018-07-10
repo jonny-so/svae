@@ -2,7 +2,7 @@ from __future__ import division, print_function
 import matplotlib.pyplot as plt
 import autograd.numpy as np
 import autograd.numpy.random as npr
-from autograd.optimizers import adam, sgd
+from autograd.misc.optimizers import adam, sgd
 from svae.svae import make_gradfun
 from svae.nnet import init_gresnet, make_loglike, gaussian_mean, gaussian_info
 from svae.models.gmm import (run_inference, init_pgm_param, make_encoder_decoder,

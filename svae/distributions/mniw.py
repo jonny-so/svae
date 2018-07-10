@@ -4,7 +4,7 @@ import autograd.numpy.random as npr
 from autograd.scipy.special import multigammaln, digamma
 from autograd.scipy.linalg import solve_triangular
 from autograd import grad
-from autograd.util import make_tuple
+from autograd.builtins import tuple as tuple_
 from scipy.stats import chi2
 
 from svae.util import symmetrize
@@ -51,8 +51,8 @@ def expectedstats_standard(nu, S, M, K, fudge=1e-8):
     assert is_posdef(E_Sigmainv)
     assert is_posdef(E_AT_Sigmainv_A)
 
-    return make_tuple(
-        -1./2*E_AT_Sigmainv_A, E_Sigmainv_A.T, -1./2*E_Sigmainv, 1./2*E_logdetSigmainv)
+    return tuple_((
+        -1./2*E_AT_Sigmainv_A, E_Sigmainv_A.T, -1./2*E_Sigmainv, 1./2*E_logdetSigmainv))
 
 def expectedstats_autograd(natparam):
     return grad(logZ)(natparam)

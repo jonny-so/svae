@@ -2,7 +2,6 @@ from __future__ import division
 import autograd.numpy as np
 from autograd.scipy.special import multigammaln, digamma
 from autograd import grad
-from autograd.util import make_tuple
 
 from svae.util import symmetrize, outer
 from gaussian import pack_dense, unpack_dense

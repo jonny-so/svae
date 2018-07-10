@@ -2,7 +2,7 @@ from __future__ import division, print_function
 import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd import grad
-from autograd.util import make_tuple
+from autograd.builtins import tuple as tuple_
 from functools import partial
 import sys
 
@@ -150,7 +150,7 @@ def get_arhmm_local_nodeparams(lds_global_natparam, lds_expected_stats):
 def get_hmm_vlb(lds_global_natparam, hmm_local_natparam, lds_expected_stats):
     init_params, pair_params, _ = hmm_local_natparam
     node_params = get_arhmm_local_nodeparams(lds_global_natparam, lds_expected_stats)
-    local_natparam = make_tuple(init_params, pair_params, node_params)
+    local_natparam = tuple_((init_params, pair_params, node_params))
     return hmm_logZ(local_natparam)
 
 

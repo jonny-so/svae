@@ -3,7 +3,7 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd import grad
 from autograd.convenience_wrappers import grad_and_aux as agrad, value_and_grad as vgrad
-from autograd.util import make_tuple
+from autograd.builtins import tuple as tuple_
 from autograd.core import primitive, primitive_with_aux
 from operator import itemgetter, attrgetter
 
@@ -135,12 +135,12 @@ def natural_smoother_general(forward_messages, init_params, pair_params, node_pa
         J, h = filtered_message
         mu, Sigma = natural_to_mean(filtered_message)
         ExxT = Sigma + np.outer(mu, mu)
-        return make_tuple(J, h, mu), [(mu, ExxT, 0.)]
+        return tuple_((J, h, mu)), [(mu, ExxT, 0.)]
 
     def bind(result, step):
         next_smooth, stats = result
         J, h, (mu, ExxT, ExxnT) = step(next_smooth)
-        return make_tuple(J, h, mu), [(mu, ExxT, ExxnT)] + stats
+        return tuple_((J, h, mu)), [(mu, ExxT, ExxnT)] + stats
 
     rts = lambda next_pred, filtered, pair_param: lambda next_smooth: \
         natural_rts_backward_step(next_smooth, next_pred, filtered, pair_param)
@@ -211,7 +211,7 @@ def natural_lds_inference_general_autograd(natparam, node_params, num_samples=No
             init_params, pair_params, node_params)
         return lognorm, (lognorm, forward_messages)
 
-    all_natparams = make_tuple(init_params, pair_params, node_params)
+    all_natparams = tuple_((init_params, pair_params, node_params))
     expected_stats, (lognorm, forward_messages) = agrad(lds_log_normalizer)(all_natparams)
     samples = natural_sample_backward_general(forward_messages, pair_params, num_samples)
 

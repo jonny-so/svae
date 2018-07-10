@@ -1,7 +1,7 @@
 from __future__ import division, print_function
 from toolz import curry
 from autograd import value_and_grad as vgrad
-from autograd.util import flatten
+from autograd.misc import flatten
 from util import split_into_batches, get_num_datapoints
 
 callback = lambda i, val, params, grad: print('{}: {}'.format(i, val))
