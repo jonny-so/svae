@@ -7,6 +7,7 @@ from svae.nnet import init_gresnet, make_loglike, gaussian_mean, gaussian_info
 from svae.models.gmm import (run_inference, init_pgm_param, make_encoder_decoder,
                              make_plotter_2d, pgm_expectedstats)
 from svae.optimizers import adam
+import pickle
 
 def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, rate):
     rads = np.linspace(0, 2*np.pi, num_classes, endpoint=False)
@@ -22,6 +23,17 @@ def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, r
 
     return 10*npr.permutation(np.einsum('ti,tij->tj', features, rotations))
 
+
+N = 2  # number of latent dimensions
+P = 2  # number of observation dimensions
+
+recognize, recogn_params = \
+    init_gresnet(P, [(40, np.tanh), (40, np.tanh), (2 * N, gaussian_info)])
+decode, loglike_params = \
+    init_gresnet(N, [(40, np.tanh), (40, np.tanh), (2 * P, gaussian_mean)])
+
+encode_mean, decode_mean = make_encoder_decoder(recognize, decode)
+
 if __name__ == "__main__":
     npr.seed(1)
     plt.ion()
@@ -29,8 +41,6 @@ if __name__ == "__main__":
     num_clusters = 5           # number of clusters in pinwheel data
     samples_per_cluster = 100  # number of samples per cluster in pinwheel
     K = 15                     # number of components in mixture model
-    N = 2                      # number of latent dimensions
-    P = 2                      # number of observation dimensions
 
     # generate synthetic data
     data = make_pinwheel_data(0.3, 0.05, num_clusters, samples_per_cluster, 0.25)
@@ -39,10 +49,6 @@ if __name__ == "__main__":
     pgm_prior_params = init_pgm_param(K, N, alpha=0.05/K, niw_conc=0.5)
 
     # construct recognition and decoder networks and initialize them
-    recognize, recogn_params = \
-        init_gresnet(P, [(40, np.tanh), (40, np.tanh), (2*N, gaussian_info)])
-    decode,   loglike_params = \
-        init_gresnet(N, [(40, np.tanh), (40, np.tanh), (2*P, gaussian_mean)])
     loglike = make_loglike(decode)
 
     # initialize gmm parameters
@@ -50,7 +56,6 @@ if __name__ == "__main__":
     params = pgm_params, loglike_params, recogn_params
 
     # set up encoder/decoder and plotting
-    encode_mean, decode_mean = make_encoder_decoder(recognize, decode)
     plot = make_plotter_2d(recognize, decode, data, num_clusters, params, plot_every=100)
 
     # instantiate svae gradient function
@@ -58,4 +63,6 @@ if __name__ == "__main__":
 
     # optimize
     params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
-                 params, num_iters=1000, step_size=1e-3)
+                 params, num_iters=10000, step_size=1e-3)
+
+    pickle.dump(params, open('gmm_svae_synth_params.pkl', 'wb'))

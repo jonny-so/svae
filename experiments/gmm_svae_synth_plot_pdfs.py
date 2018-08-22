@@ -3,17 +3,14 @@ import numpy as np
 import numpy.random as npr
 import cPickle as pickle
 import matplotlib.pyplot as plt
-from itertools import count
-from cycler import cycler
 from matplotlib.colors import LinearSegmentedColormap
 from scipy.stats import norm
 from operator import itemgetter
-from functools import partial
 
-from gmm_svae_synth import decode as gmm_decode, make_pinwheel_data, normalize, \
-    dirichlet, niw, encode_mean, decode_mean
-from svae.forward_models import mlp_decode
-mlp_decode = partial(mlp_decode, tanh_scale=1000., sigmoid_output=False)
+from gmm_svae_synth import decode as gmm_decode, decode_mean, encode_mean, make_pinwheel_data
+from svae.util import normalize
+from svae.distributions import dirichlet, niw, gaussian
+# mlp_decode = partial(mlp_decode, tanh_scale=1000., sigmoid_output=False)
 
 gridsize = 75
 num_samples = 2000
@@ -32,6 +29,14 @@ colors = np.array([
 [202,178,214],
 ]) / 256.0
 
+def niw_expected_standard_params(natparam):
+    J_natural, h, _, _ = gaussian.unpack_dense(niw.expectedstats(natparam))
+    J = -2*J_natural
+
+    mu = np.linalg.solve(J, h)
+    Sigma = np.linalg.inv(J)
+
+    return mu, Sigma
 
 def get_hexbin_coords(ax, xlims, ylims, gridsize):
     coords = ax.hexbin([], [], gridsize=gridsize, extent=tuple(xlims)+tuple(ylims)).get_offsets()
@@ -56,8 +61,7 @@ def plot_transparent_hexbin(ax, func, xlims, ylims, gridsize, color):
               gridsize=gridsize, vmin=0., vmax=1., zorder=1)
 
 def decode_density(latent_locations, phi, decode, weight=1.):
-    mu, log_sigmasq = decode(latent_locations, phi)
-    sigmasq = np.exp(log_sigmasq)
+    mu, sigmasq = decode(phi, latent_locations[:,None,:])
 
     def density(r):
         distances = np.sqrt(((r[None,:,:] - mu)**2 / sigmasq).sum(2))
@@ -95,10 +99,10 @@ def plot(axs, data, params):
 
     dir_hypers, all_niw_hypers = natparam
     weights = normalize(np.exp(dirichlet.expectedstats(dir_hypers)))
-    components = map(niw.expected_standard_params, all_niw_hypers)
+    components = map(niw_expected_standard_params, all_niw_hypers)
 
     latent_locations = encode_mean(data, natparam, psi)
-    reconstruction = decode_mean(latent_locations, phi)
+    reconstruction = decode_mean(phi, latent_locations)
 
     ## make data-space plot
 
