@@ -4,7 +4,7 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from svae.svae import make_gradfun
 from svae.nnet import init_gresnet, make_loglike, gaussian_mean, gaussian_info
-from svae.models.gmm import (run_inference, init_pgm_param, make_encoder_decoder,
+from svae.models.gmm import (run_inference_mf, init_pgm_param, make_encoder_decoder,
                              make_plotter_2d, pgm_expectedstats)
 from svae.optimizers import adam
 import pickle
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     data = make_pinwheel_data(0.3, 0.05, num_clusters, samples_per_cluster, 0.25)
 
     # set prior natparam to something sparsifying but otherwise generic
-    pgm_prior_params = init_pgm_param(K, N, alpha=0.05/K, niw_conc=0.5)
+    pgm_prior_params = init_pgm_param(K, N, alpha=0.01/K, niw_conc=0.5)
 
     # construct recognition and decoder networks and initialize them
     loglike = make_loglike(decode)
@@ -59,10 +59,10 @@ if __name__ == "__main__":
     plot = make_plotter_2d(recognize, decode, data, num_clusters, params, plot_every=100)
 
     # instantiate svae gradient function
-    gradfun = make_gradfun(run_inference, recognize, loglike, pgm_prior_params, pgm_expectedstats, data)
+    gradfun = make_gradfun(run_inference_mf, recognize, loglike, pgm_prior_params, pgm_expectedstats, data)
 
     # optimize
     params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
-                 params, num_iters=10000, step_size=1e-3)
+                 params, num_iters=1000, step_size=1e-3)
 
     pickle.dump(params, open('gmm_svae_synth_params.pkl', 'wb'))

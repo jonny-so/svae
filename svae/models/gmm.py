@@ -8,11 +8,17 @@ from svae.distributions import dirichlet, categorical, niw, gaussian
 
 ### inference functions for the SVAE interface
 
-def run_inference(prior_natparam, global_natparam, global_stats, nn_potentials, num_samples):
-    _, stats, local_natparam, local_kl = local_meanfield(global_stats, nn_potentials)
+def run_inference(prior_natparam, global_natparam, global_stats, nn_potentials, local_inference, num_samples):
+    _, stats, local_natparam, local_kl = local_inference(global_stats, nn_potentials)
     samples = gaussian.natural_sample(local_natparam[1], num_samples)
     global_kl = prior_kl(global_natparam, prior_natparam)
     return samples, unbox(stats), global_kl, local_kl
+
+def run_inference_ep(prior_natparam, global_natparam, global_stats, nn_potentials, num_samples):
+    return run_inference(prior_natparam, global_natparam, global_stats, nn_potentials, local_ep, num_samples)
+
+def run_inference_mf(prior_natparam, global_natparam, global_stats, nn_potentials, num_samples):
+    return run_inference(prior_natparam, global_natparam, global_stats, nn_potentials, local_meanfield, num_samples)
 
 def make_encoder_decoder(recognize, decode):
     def encode_mean(data, natparam, recogn_params):
@@ -71,8 +77,77 @@ def gaussian_kl(gaussian_globals, label_stats, natparam, stats):
 def label_kl(label_global, natparam, stats):
     return np.tensordot(stats, natparam - label_global) - categorical.logZ(natparam)
 
-### GMM mean field functions
 
+### GMM ep functions
+
+def local_ep(global_stats, node_potentials):
+    label_global, gaussian_globals = global_stats
+    node_potentials = gaussian.pack_dense(*node_potentials)
+
+    label_natparam, label_stats = \
+        label_ep(label_global, gaussian_globals, node_potentials)
+    gaussian_natparam, gaussian_stats = \
+        gaussian_ep(gaussian_globals, node_potentials, label_stats)
+
+    # collect sufficient statistics for gmm prior (sum across conditional iid)
+    dirichlet_stats = np.sum(label_stats, 0)
+    niw_stats = np.tensordot(label_stats, gaussian_stats, [[0], [0]])
+
+    local_stats = label_stats, gaussian_stats
+    prior_stats = dirichlet_stats, niw_stats
+    natparam = label_natparam, gaussian_natparam
+    kl = local_kl(getval(gaussian_globals), getval(label_global),
+        label_natparam, gaussian_natparam, label_stats, gaussian_stats)
+
+    return local_stats, prior_stats, natparam, kl
+
+def label_ep(label_global, gaussian_globals, node_potentials):
+    J_prior = -2 * gaussian.unpack_dense(gaussian_globals)[0]
+    Ex_prior = gaussian.unpack_dense(gaussian.expectedstats(gaussian_globals))[1]
+    Ex_rec = gaussian.unpack_dense(gaussian.expectedstats(node_potentials))[1]
+    J_rec = -2 * gaussian.unpack_dense(node_potentials)[0]
+    N = node_potentials.shape[0]
+    V = np.linalg.inv(J_rec[:, np.newaxis, ...] + J_prior)
+    Jm = np.sum(J_rec * Ex_rec[..., np.newaxis], axis=2)[:, np.newaxis, ...] + np.sum(
+        J_prior * Ex_prior[:, np.newaxis, :], axis=2)
+    t1 = np.outer(np.ones(N), label_global)
+    t2 = .5 * (np.log(np.linalg.det(V)) + np.log(np.linalg.det(J_prior)))
+    t3 = -.5 * np.outer(np.ones(N), np.sum(Ex_prior * np.sum(J_prior * Ex_prior[..., np.newaxis], axis=1), axis=1))
+    t4 = .5 * np.sum(np.sum(V * Jm[..., np.newaxis], axis=2) * Jm, axis=2)
+    natparam = t1 + t2 + t3 + t4
+
+    stats = categorical.expectedstats(natparam)
+
+    return natparam, stats
+
+
+def gaussian_ep(gaussian_globals, node_potentials, label_stats):
+    neghalfJ_prior, _, kappa, nu = gaussian.unpack_dense(gaussian_globals)
+    Ex_prior = gaussian.unpack_dense(gaussian.expectedstats(gaussian_globals))[1]
+    Ex_rec = gaussian.unpack_dense(gaussian.expectedstats(node_potentials))[1]
+    J_rec = -2 * gaussian.unpack_dense(node_potentials)[0]
+    J_prior = -2 * neghalfJ_prior
+
+    mix_V = np.linalg.inv(J_rec[:, np.newaxis, ...] + J_prior)
+    mix_Jm = np.sum(J_rec * Ex_rec[..., np.newaxis], axis=2)[:, np.newaxis, ...] + np.sum(
+        J_prior * Ex_prior[..., np.newaxis], axis=2)
+    mix_m = np.sum(mix_V * mix_Jm[..., np.newaxis], axis=3)
+    mix_mmT = mix_m[:, :, :, np.newaxis] * mix_m[:, :, np.newaxis, :]
+
+    m = np.sum(label_stats[..., np.newaxis] * mix_m, axis=1)
+    mmT = m[:, :, np.newaxis] * m[:, np.newaxis, :]
+    V = np.sum(label_stats[..., np.newaxis, np.newaxis] * (mix_V + mix_mmT), axis=1) - mmT
+    J = np.linalg.inv(V)
+    Jm = np.sum(J * m[..., np.newaxis], axis=1)
+    natparam = gaussian.pack_dense(-.5 * J, Jm,
+                                   np.tensordot(label_stats, kappa, [[1], [0]]),
+                                   np.tensordot(label_stats, nu, [[1], [0]]))
+    stats = gaussian.expectedstats(natparam)
+
+    return natparam, stats
+
+
+### GMM mean field functions
 
 def local_meanfield(global_stats, node_potentials):
     label_global, gaussian_globals = global_stats
