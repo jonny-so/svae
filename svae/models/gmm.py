@@ -21,8 +21,8 @@ def make_encoder_decoder(recognize, decode):
         _, Ex, _, _ = gaussian.unpack_dense(gaussian_stats)
         return Ex
 
-    def decode_mean(z, phi):
-        mu, _ = decode(z, phi)
+    def decode_mean(phi, z):
+        mu, _ = decode(phi, z)
         return mu.mean(axis=1)
 
     return encode_mean, decode_mean
