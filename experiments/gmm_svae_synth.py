@@ -2,11 +2,11 @@ from __future__ import division, print_function
 import matplotlib.pyplot as plt
 import autograd.numpy as np
 import autograd.numpy.random as npr
-from autograd.misc.optimizers import adam, sgd
 from svae.svae import make_gradfun
 from svae.nnet import init_gresnet, make_loglike, gaussian_mean, gaussian_info
 from svae.models.gmm import (run_inference, init_pgm_param, make_encoder_decoder,
                              make_plotter_2d, pgm_expectedstats)
+from svae.optimizers import adam
 
 def make_pinwheel_data(radial_std, tangential_std, num_classes, num_per_class, rate):
     rads = np.linspace(0, 2*np.pi, num_classes, endpoint=False)
@@ -57,5 +57,5 @@ if __name__ == "__main__":
     gradfun = make_gradfun(run_inference, recognize, loglike, pgm_prior_params, pgm_expectedstats, data)
 
     # optimize
-    params = sgd(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
+    params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
                  params, num_iters=1000, step_size=1e-3)
