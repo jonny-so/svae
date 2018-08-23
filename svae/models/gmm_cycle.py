@@ -46,7 +46,7 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
     z_natparams, x_natparams = local_natparams
     z_stats, x_stats = local_stats
 
-    J_rec, h_rec = -2*expand_diagonal(encoder_potentials[0]), encoder_potentials[1]
+    encoder_potentials = gaussian.pack_dense(*encoder_potentials)
 
     def surrogate_elbo(local_natparams, local_stats):
         local_kl = _local_kl(global_stats, local_natparams, local_stats)
@@ -56,29 +56,29 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
     def update_discrete(i):
         h = (i - 1) % K
         j = (i + 1) % K
-
-        ExJxT = np.sum(J_prior[:,:,None,None,...]*x_stats[1][None,None,...], axis=(-1,-2))
-        muJmuT = -2*niw_stats[2] # np.sum(mu_prior * mvp(J_prior, mu_prior), axis=-1)
-        ExJmuT = np.sum(x_stats[0] * h_prior[:,:,None,None,:], axis=-1)
+        ExxT, Ex = gaussian.unpack_dense(x_stats)[0:2]
+        ExJxT = np.sum(J_prior[:,:,None,None,...]*ExxT[None,None,...], axis=(-1,-2))
+        EmuJmuT = -2*niw_stats[2] # np.sum(mu_prior * mvp(J_prior, mu_prior), axis=-1)
+        ExJmuT = np.sum(Ex * h_prior[:,:,None,None,:], axis=-1)
         ElogdetJ = 2*niw_stats[3]
         assert(ExJxT.shape == (2,2,T,K))
-        assert(muJmuT.shape == (2,2))
+        assert(EmuJmuT.shape == (2,2))
         assert(ExJmuT.shape == (2,2,T,K))
 
         logodds = z_prior[i] \
-            + .5 * (1-z_stats[:,j]) * (ElogdetJ[1,0] - ExJxT[1,0,:,i] - muJmuT[1,0] + 2*ExJmuT[1,0,:,i]) \
-            + .5 * z_stats[:,j]     * (ElogdetJ[1,1] - ExJxT[1,1,:,i] - muJmuT[1,1] + 2*ExJmuT[1,1,:,i]) \
-            - .5 * (1-z_stats[:,j]) * (ElogdetJ[0,0] - ExJxT[0,0,:,i] - muJmuT[0,0] + 2*ExJmuT[0,0,:,i]) \
-            - .5 * z_stats[:,j]     * (ElogdetJ[0,1] - ExJxT[0,1,:,i] - muJmuT[0,1] + 2*ExJmuT[0,1,:,i]) \
-            + .5 * (1-z_stats[:,h]) * (ElogdetJ[0,1] - ExJxT[0,1,:,h] - muJmuT[0,1] + 2*ExJmuT[0,1,:,h]) \
-            + .5 * z_stats[:,h]     * (ElogdetJ[1,1] - ExJxT[1,1,:,h] - muJmuT[1,1] + 2*ExJmuT[1,1,:,h]) \
-            - .5 * (1-z_stats[:,h]) * (ElogdetJ[0,0] - ExJxT[0,0,:,h] - muJmuT[0,0] + 2*ExJmuT[0,0,:,h]) \
-            - .5 * z_stats[:,h]     * (ElogdetJ[1,0] - ExJxT[1,0,:,h] - muJmuT[1,0] + 2*ExJmuT[1,0,:,h])
+            + .5 * (1-z_stats[:,j]) * (ElogdetJ[1,0] - ExJxT[1,0,:,i] - EmuJmuT[1,0] + 2*ExJmuT[1,0,:,i]) \
+            + .5 * z_stats[:,j]     * (ElogdetJ[1,1] - ExJxT[1,1,:,i] - EmuJmuT[1,1] + 2*ExJmuT[1,1,:,i]) \
+            - .5 * (1-z_stats[:,j]) * (ElogdetJ[0,0] - ExJxT[0,0,:,i] - EmuJmuT[0,0] + 2*ExJmuT[0,0,:,i]) \
+            - .5 * z_stats[:,j]     * (ElogdetJ[0,1] - ExJxT[0,1,:,i] - EmuJmuT[0,1] + 2*ExJmuT[0,1,:,i]) \
+            + .5 * (1-z_stats[:,h]) * (ElogdetJ[0,1] - ExJxT[0,1,:,h] - EmuJmuT[0,1] + 2*ExJmuT[0,1,:,h]) \
+            + .5 * z_stats[:,h]     * (ElogdetJ[1,1] - ExJxT[1,1,:,h] - EmuJmuT[1,1] + 2*ExJmuT[1,1,:,h]) \
+            - .5 * (1-z_stats[:,h]) * (ElogdetJ[0,0] - ExJxT[0,0,:,h] - EmuJmuT[0,0] + 2*ExJmuT[0,0,:,h]) \
+            - .5 * z_stats[:,h]     * (ElogdetJ[1,0] - ExJxT[1,0,:,h] - EmuJmuT[1,0] + 2*ExJmuT[1,0,:,h])
         return logodds, bernoulli.natural_to_mean(logodds)
 
     def update_gaussian(i):
         z_pairstats = _z_pairstats(z_stats)
-        natparams_new = x_natparams[:,i] + np.tensordot(z_pairstats[:,i], niw_stats_dense, [(1,2), (0,1)])
+        natparams_new = encoder_potentials[:,i] + np.tensordot(z_pairstats[:,i], niw_stats_dense, [(1,2), (0,1)])
         return natparams_new, gaussian.expectedstats(natparams_new)
 
     for i in range(K - 1, -1, -1):
@@ -119,63 +119,45 @@ def _local_ep_update(global_stats, encoder_potentials, local_messages):
 
     g_i, g_j = local_messages
 
-    def log_r(i, z_i, z_j, g_j_left, g_i_right):
-        j = (i + 1) % K
-        f_i = z_i*z_prior[i]
-        f_j = z_j*z_prior[j]
+    def log_r(z_i, z_j):
+        g_j_left = np.roll(g_j, 1, axis=1)
+        g_i_right = np.roll(g_i, -1, axis=1)
+        f_i = z_i*z_prior
+        f_j = z_j*np.roll(z_prior, -1, axis=0)
         J_prior_i = J_prior[z_i,z_j]
         mu_prior_i = mu_prior[z_i,z_j]
-        Psi_i = Psi[:,i,z_i,z_j]
-        h_i = np.matmul(J_prior_i, mu_prior_i) + h_rec[:,i,:]
-        logZ = .5*np.log(np.linalg.det(Psi[:,i,z_i,z_j])) + \
+        Psi_i = Psi[:,:,z_i,z_j]
+        h_i = np.matmul(J_prior_i, mu_prior_i) + h_rec
+        logZ = .5*np.log(np.linalg.det(Psi_i)) + \
             .5*np.log(np.linalg.det(J_prior_i)) + \
-            .5*np.sum(mvp(Psi_i, h_i)*h_i, axis=1) - \
+            .5*np.sum(mvp(Psi_i, h_i)*h_i, axis=-1) - \
             .5*np.sum(np.matmul(J_prior_i, mu_prior_i)*mu_prior_i)
         return f_i + f_j + z_i*g_j_left + z_j*g_i_right + logZ
 
-    def update(i, g_j_left, g_i_right):
-        j = (i + 1) % K
-        h = (i - 1) % K
-        log_r_i = np.stack([
-            log_r(i, 0, 0, g_j_left, g_i_right),
-            log_r(i, 0, 1, g_j_left, g_i_right),
-            log_r(i, 1, 0, g_j_left, g_i_right),
-            log_r(i, 1, 1, g_j_left, g_i_right)]).T
+    def gen_x_stats():
+        log_r_i = np.stack([log_r(0, 0), log_r(0, 1), log_r(1, 0), log_r(1, 1)], axis=-1)
         log_r_i -= logsumexp(log_r_i)[...,None]
-        g_i_i = logsumexp(np.stack([log_r_i[:, 2], log_r_i[:, 3]]).T) - \
-                logsumexp(np.stack([log_r_i[:, 0], log_r_i[:, 1]]).T) - \
-                g_j_left - z_prior[i]
-        g_j_i = logsumexp(np.stack([log_r_i[:, 1], log_r_i[:, 3]]).T) - \
-                logsumexp(np.stack([log_r_i[:, 0], log_r_i[:, 2]]).T) - \
-                g_i_right - z_prior[j]
-        return g_i_i, g_j_i
+        z_pairstats = np.exp(log_r_i).reshape(T,K,2,2)
 
-    def gen_x_stats(i):
-        h = (i - 1) % K
-        j = (i + 1) % K
-        log_r_i = np.stack([
-            log_r(i, 0, 0, g_j[:, h], g_i[:, j]),
-            log_r(i, 0, 1, g_j[:, h], g_i[:, j]),
-            log_r(i, 1, 0, g_j[:, h], g_i[:, j]),
-            log_r(i, 1, 1, g_j[:, h], g_i[:, j])]).T
-        log_r_i -= logsumexp(log_r_i)[...,None]
-        z_pairstats = np.exp(log_r_i).reshape(T,2,2)
+        m = mvp(Psi, h_prior + h_rec[:,:,None,None,:]) # (T, 2, 2, N)
+        stats = gaussian.pack_dense(Psi + outer(m, m), m, np.ones((T,K,2,2)), np.ones((T,K,2,2)))
+        return np.sum(z_pairstats[...,None,None] * stats, axis=(2,3))
 
-        m = mvp(Psi[:,i], h_prior + h_rec[:,i,None,None,:]) # (T, 2, 2, N)
-        stats = gaussian.pack_dense(Psi[:,i] + outer(m, m), m, np.ones((T,2,2)), np.ones((T,2,2)))
-        return np.sum(z_pairstats[...,None,None] * stats, axis=(1,2))
-
-    for i in range(K):
-        h = (i - 1) % K
-        j = (i + 1) % K
-        g_i_i, g_j_i = update(i, g_j[:,h], g_i[:,j])
-        g_i = replace(g_i, g_i_i, i)
-        g_j = replace(g_j, g_j_i, i)
+    log_r_i = np.stack([log_r(0, 0), log_r(0, 1), log_r(1, 0), log_r(1, 1)], axis=-1)
+    log_r_i -= logsumexp(log_r_i)[...,None]
+    g_j_left = np.roll(g_j, 1, axis=1)
+    g_i_right = np.roll(g_i, -1, axis=1)
+    g_i = logsumexp(np.stack([log_r_i[..., 2], log_r_i[..., 3]], axis=-1)) - \
+            logsumexp(np.stack([log_r_i[..., 0], log_r_i[..., 1]], axis=-1)) - \
+            g_j_left - z_prior
+    g_j = logsumexp(np.stack([log_r_i[..., 1], log_r_i[..., 3]], axis=-1)) - \
+            logsumexp(np.stack([log_r_i[..., 0], log_r_i[..., 2]], axis=-1)) - \
+            g_i_right - np.roll(z_prior, -1, axis=0)
 
     z_natparams = g_i + np.roll(g_j, 1, axis=1) + z_prior
     z_stats = bernoulli.natural_to_mean(z_natparams)
 
-    x_stats = np.stack([gen_x_stats(i) for i in range(K)], axis=1)
+    x_stats = gen_x_stats()
     x_natparams = gaussian.mean_to_natural(x_stats)
 
     # assert(np.all(getval(z_stats) > 0))
@@ -203,7 +185,7 @@ def _local_kl(global_stats, local_natparams, local_stats):
 
     z_kl = _z_kl(global_stats[0], z_natparams, z_stats)
     x_kl = _x_kl(global_stats[1], x_natparams, x_stats, z_stats)
-    print('z: {}, x: {}'.format(getval(z_kl), getval(x_kl)))
+    # print('z: {}, x: {}'.format(getval(z_kl), getval(x_kl)))
     return z_kl + x_kl
 
 def _global_logZ(global_natparams):
@@ -216,12 +198,14 @@ def _global_kl(global_prior_natparams, global_natparams):
     logZ_difference = _global_logZ(global_natparams) - _global_logZ(global_prior_natparams)
     return np.dot(natparam_difference, stats) - np.sum(logZ_difference)
 
-def local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
+foo1 = npr.randn(1000, 10)
+foo2 = npr.randn(1000, 10,10)
+def _local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
     T, K, N = encoder_potentials[0].shape
 
     def make_fpfun((global_stats, encoder_potentials)):
         return lambda x: \
-            _local_mf_update(global_stats, encoder_potentials, *x)
+            _local_mf_update(global_prior_natparams, global_natparams, global_stats, encoder_potentials, *x)
 
     def diff(x, x_prev):
         return np.sum(np.abs(x_prev[0][0] - x[0][0])) \
@@ -229,8 +213,8 @@ def local_inference_mf(global_prior_natparams, global_natparams, global_stats, e
             + np.sum(np.abs(x_prev[0][1][1] - x[0][1][1]))
 
     def init_x0():
-        z_natparams = npr.randn(T, K)
-        x_natparams = gaussian.pack_dense(-np.tile(np.eye(N), (T, K, 1, 1)), npr.randn(T, K, N))
+        z_natparams = foo1[:T, :K]
+        x_natparams = gaussian.pack_dense(-np.tile(np.eye(N), (T, K, 1, 1)), foo2[:T,:K,:N]) #np.zeros((T, K, N)))
         z_stats = bernoulli.natural_to_mean(z_natparams)
         x_stats = gaussian.expectedstats(x_natparams)
         return (z_natparams, x_natparams), (z_stats, x_stats)
@@ -245,8 +229,12 @@ def local_inference_mf(global_prior_natparams, global_natparams, global_stats, e
 
     local_kl = _local_kl(unbox(global_stats), local_natparams, local_stats)
     global_kl = _global_kl(global_prior_natparams, global_natparams)
-    return local_samples, unbox((beta_stats, niw_stats)), global_kl, local_kl
+    return local_samples, local_natparams, unbox((beta_stats, niw_stats)), global_kl, local_kl
 
+def local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
+    local_samples, _, local_stats, global_kl, local_kl = \
+        _local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples)
+    return local_samples, local_stats, global_kl, local_kl
 
 def local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
     local_samples, _, local_stats, global_kl, local_kl = \
@@ -256,6 +244,11 @@ def local_inference_ep(global_prior_natparams, global_natparams, global_stats, e
 def local_natparams_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials):
     _, local_natparams, _, _, _ = \
         _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, 0)
+    return local_natparams
+
+def local_natparams_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials):
+    _, local_natparams, _, _, _ = \
+        _local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, 0)
     return local_natparams
 
 def _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
