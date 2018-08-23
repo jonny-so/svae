@@ -14,6 +14,9 @@ def rand_partial_isometry(m, n):
     d = max(m, n)
     return np.linalg.qr(npr.randn(d,d))[0][:m,:n]
 
+def identity_isometry(m, n):
+    return np.eye(max(m,n))[:m,:n]
+
 def _make_ravelers(input_shape):
     ravel = lambda inputs: np.reshape(inputs, (-1, input_shape[-1]))
     unravel = lambda outputs: np.reshape(outputs, input_shape[:-1] + (-1,))
@@ -27,9 +30,10 @@ init_layer_random = curry(lambda d_in, d_out, scale:
                           (scale*npr.randn(d_in, d_out), scale*npr.randn(d_out)))
 init_layer_partial_isometry = lambda d_in, d_out: \
     (rand_partial_isometry(d_in, d_out), npr.randn(d_out))
-init_layer = lambda d_in, d_out, fn=init_layer_random(scale=1e-2): fn(d_in, d_out)
 
-
+def init_layer(d_in, d_out, fn=None):
+    fn = init_layer_random(scale=np.sqrt(2./(d_in + d_out))) if fn is None else fn
+    return fn(d_in, d_out)
 
 ### special output layers to produce Gaussian parameters
 
@@ -68,10 +72,11 @@ def init_mlp(d_in, layer_specs, **kwargs):
 ### turn a gaussian_mean MLP into a log likelihood function
 
 def _diagonal_gaussian_loglike(x, mu, sigmasq):
-    mu = mu if mu.ndim == 3 else mu[:,None,:]
-    T, K, p = mu.shape
-    assert x.shape == (T, p)
-    return -T*p/2.*np.log(2*np.pi) + (-1./2*np.sum((x[:,None,:]-mu)**2 / sigmasq)
+    mu = mu if mu.ndim == (x.ndim+1) else mu[...,None,:]
+    K, p = mu.shape[-2:]
+    T = np.product(mu.shape[:-2])
+    assert x.shape == mu.shape[:-2] + (p,)
+    return -T*p/2.*np.log(2*np.pi) + (-1./2*np.sum((x[...,None,:]-mu)**2 / sigmasq)
                                       -1./2*np.sum(np.log(sigmasq))) / K
 
 def make_loglike(gaussian_mlp):
@@ -96,15 +101,15 @@ def _gresnet(mlp_type, mlp, params, inputs):
         mu_mlp, sigmasq_mlp = mlp(mlp_params, inputs)
         mu_res = unravel(np.dot(ravel(inputs), W) + b1)
         sigmasq_res = log1pexp(b2)
-        return tuple_((mu_mlp + mu_res, sigmasq_mlp + sigmasq_res))
+        return tuple_((mu_mlp + mu_res, sigmasq_mlp))
     else:
         J_mlp, h_mlp = mlp(mlp_params, inputs)
         J_res = -1./2 * log1pexp(b2)
         h_res = unravel(np.dot(ravel(inputs), W) + b1)
-        return tuple_((J_mlp + J_res, h_mlp + h_res))
+        return tuple_((J_mlp, h_mlp + h_res))
 
 def init_gresnet(d_in, layer_specs):
     d_out = layer_specs[-1][0] // 2
-    res_params = rand_partial_isometry(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
+    res_params = identity_isometry(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
     mlp, mlp_params = init_mlp(d_in, layer_specs)
     return _gresnet(gaussian_mlp_type(layer_specs), mlp), (mlp_params, res_params)
