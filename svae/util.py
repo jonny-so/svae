@@ -31,6 +31,22 @@ def rle(stateseq):
     pos = np.concatenate(([0],pos+1,[len(stateseq)]))
     return stateseq[pos[:-1]], np.diff(pos)
 
+def expand_diagonal(x):
+    N = x.shape[-1]
+    return np.tile(np.eye(N), x.shape[:-1] + (1,1)) * x[...,None]
+
+def mvp(A, b):
+    return np.sum(A*b[...,None,:], axis=-1)
+
+def logsumexp(x):
+    m = np.max(x, axis=-1)
+    return m + np.log(np.sum(np.exp(x - m[...,None]), axis=-1))
+
+def replace(x, a, i, axis=-1):
+    if axis < 0: axis = x.ndim  + axis
+    x_split = np.split(x, (i,i+1), axis=axis)
+    return np.concatenate([x_split[0], np.expand_dims(a, axis), x_split[2]], axis=axis)
+
 isarray = lambda x: hasattr(x, 'ndim')
 flat = lambda x: flatten(x)[0]
 partial_flat = lambda a, axes: np.reshape(a, a.shape[:-axes] + (-1,))

@@ -3,7 +3,7 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from functools import partial
 
-from svae.util import T
+from svae.util import mvp, outer, T
 
 # NOTE: can compute Cholesky then avoid the other cubic computations,
 # but numpy/scipy has no dpotri or solve_triangular that broadcasts
@@ -13,7 +13,7 @@ def expectedstats(natparam):
     J = -2*neghalfJ
     Ex = np.linalg.solve(J, h)
     ExxT = np.linalg.inv(J) + Ex[...,None] * Ex[...,None,:]
-    En = np.ones(J.shape[0]) if J.ndim == 3 else 1.
+    En = np.ones(J.shape[:-2]) if J.ndim >= 3 else 1.
     return pack_dense(ExxT, Ex, En, En)
 
 def logZ(natparam):
@@ -55,3 +55,13 @@ def pack_dense(A, b, *args):
 def unpack_dense(arr):
     N = arr.shape[-1] - 2
     return arr[...,:N, :N], arr[...,:N,N], arr[...,N,N], arr[...,N+1,N+1]
+
+def natural_to_standard(natparam):
+    ExxT, Ex, _, _ = unpack_dense(expectedstats(natparam))
+    return ExxT - outer(Ex, Ex), Ex
+
+def mean_to_natural(stats):
+    ExxT, Ex, _, _ = unpack_dense(stats)
+    V = ExxT - outer(Ex, Ex)
+    J = np.linalg.inv(V)
+    return pack_dense(-.5*J, mvp(J, Ex))
