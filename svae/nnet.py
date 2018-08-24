@@ -3,9 +3,8 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd.builtins import tuple as tuple_
 from toolz import curry
-from collections import defaultdict
 
-from util import compose, sigmoid, relu, identity, log1pexp, isarray
+from util import compose, sigmoid, softmax, log1pexp, isarray
 
 
 ### util
@@ -50,6 +49,14 @@ def gaussian_info(inputs):
     J = -1./2 * log1pexp(J_input)
     return tuple_((J, h))
 
+@curry
+def gaussian_info_mix(classes, inputs):
+    mlp_softmax_in = inputs[...,-classes:]
+    mlp_mixitem_in = np.reshape(inputs[...,:-classes], inputs.shape[:-1] + (classes,2,-1))
+    h = mlp_mixitem_in[...,1,:]
+    J = -1./2 * log1pexp(mlp_mixitem_in[...,0,:])
+    p = softmax(mlp_softmax_in)
+    return tuple_((J, h, p))
 
 ### multi-layer perceptrons (MLPs)
 
@@ -87,7 +94,10 @@ def make_loglike(gaussian_mlp):
 
 ### our version of Gaussian resnets
 
-gaussian_mlp_types = {gaussian_mean.func: 'mean', gaussian_info.func: 'info'}
+gaussian_mlp_types = {
+    gaussian_mean.func: 'mean',
+    gaussian_info.func: 'info',
+    gaussian_info_mix.func: 'info_mix'}
 
 def gaussian_mlp_type(layer_specs):
     return gaussian_mlp_types[layer_specs[-1][1].func]
@@ -102,14 +112,27 @@ def _gresnet(mlp_type, mlp, params, inputs):
         mu_res = unravel(np.dot(ravel(inputs), W) + b1)
         sigmasq_res = log1pexp(b2)
         return tuple_((mu_mlp + mu_res, sigmasq_mlp))
-    else:
+    elif mlp_type == 'info':
         J_mlp, h_mlp = mlp(mlp_params, inputs)
         J_res = -1./2 * log1pexp(b2)
         h_res = unravel(np.dot(ravel(inputs), W) + b1)
         return tuple_((J_mlp, h_mlp + h_res))
+    elif mlp_type == 'info_mix':
+        d_out = b1.shape[-1]
+        J_mlp, h_mlp, p_mlp = mlp(mlp_params, inputs)
+        J_mlp = np.reshape(J_mlp, J_mlp.shape[:-1] + (-1,d_out))
+        h_mlp = np.reshape(h_mlp, h_mlp.shape[:-1] + (-1,d_out))
+        h_res = unravel(np.dot(ravel(inputs), W) + b1)
+        return tuple_((J_mlp, h_mlp + h_res[...,None,:], p_mlp))
 
 def init_gresnet(d_in, layer_specs):
     d_out = layer_specs[-1][0] // 2
+    res_params = identity_isometry(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
+    mlp, mlp_params = init_mlp(d_in, layer_specs)
+    return _gresnet(gaussian_mlp_type(layer_specs), mlp), (mlp_params, res_params)
+
+def init_gresnet_mix(d_in, d_out, classes, layer_specs):
+    layer_specs = layer_specs + [((2*d_out + 1)*classes, gaussian_info_mix(classes))]
     res_params = identity_isometry(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
     mlp, mlp_params = init_mlp(d_in, layer_specs)
     return _gresnet(gaussian_mlp_type(layer_specs), mlp), (mlp_params, res_params)
