@@ -24,7 +24,7 @@ def _x_kl(niw_stats, x_natparams, x_stats, z_stats):
 
 def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_stats):
 
-    T,K,N = encoder_potentials[1].shape
+    T,K,N = encoder_potentials[0].shape
 
     beta_stats, niw_stats = global_stats[0], gaussian.unpack_dense(global_stats[1])
     niw_stats_dense = global_stats[1]
@@ -73,7 +73,7 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
 
 def _local_ep_update(global_stats, encoder_potentials, local_messages):
 
-    T,K,N = encoder_potentials[1].shape
+    T,K,C,N = encoder_potentials[0].shape
 
     beta_stats, niw_stats = global_stats[0], gaussian.unpack_dense(global_stats[1])
 
@@ -81,9 +81,11 @@ def _local_ep_update(global_stats, encoder_potentials, local_messages):
     J_prior, h_prior = -2*symmetrize(niw_stats[0]), niw_stats[1]
     mu_prior = np.linalg.solve(J_prior, h_prior)
 
-    J_rec, h_rec = -2*expand_diagonal(encoder_potentials[0]), encoder_potentials[1]
-    mu_rec = np.linalg.solve(J_rec, h_rec)
-    Psi = np.linalg.inv(J_rec[...,None,None,:,:] + J_prior)
+    J_rec = -2*expand_diagonal(encoder_potentials[0]) # (T,K,C,N,N)
+    h_rec = encoder_potentials[1] # (T,K,C,N)
+    p_rec = encoder_potentials[2] # (T,K,C)
+
+    Psi = np.linalg.inv(J_rec[...,None,None,:,:] + J_prior) # (T,K,C,2,2,N,N)
 
     g_i, g_j = local_messages
 
@@ -92,26 +94,26 @@ def _local_ep_update(global_stats, encoder_potentials, local_messages):
         g_i_right = np.roll(g_i, -1, axis=1)
         f_i = z_i*z_prior
         f_j = z_j*np.roll(z_prior, -1, axis=0)
-        J_prior_i = J_prior[z_i,z_j]
-        mu_prior_i = mu_prior[z_i,z_j]
-        Psi_i = Psi[:,:,z_i,z_j]
-        h_i = np.matmul(J_prior_i, mu_prior_i) + h_rec
+        J_prior_i = J_prior[z_i,z_j] # (N,N)
+        mu_prior_i = mu_prior[z_i,z_j] # (N)
+        Psi_i = Psi[:,:,:,z_i,z_j] # (T,K,C,N,N)
+        h_i = np.matmul(J_prior_i, mu_prior_i) + h_rec # (T,K,C,N)
         logZ = .5*np.log(np.linalg.det(Psi_i)) + \
             .5*np.log(np.linalg.det(J_prior_i)) + \
             .5*np.sum(mvp(Psi_i, h_i)*h_i, axis=-1) - \
-            .5*np.sum(np.matmul(J_prior_i, mu_prior_i)*mu_prior_i)
-        return f_i + f_j + z_i*g_j_left + z_j*g_i_right + logZ
+            .5*np.sum(mvp(J_prior_i, mu_prior_i)*mu_prior_i, axis=-1)
+        return (f_i + f_j + z_i*g_j_left + z_j*g_i_right)[...,None] + logZ
 
     def gen_x_stats():
-        log_r_i = np.stack([log_r(0, 0), log_r(0, 1), log_r(1, 0), log_r(1, 1)], axis=-1)
+        log_r_i = np.stack([log_r(0, 0), log_r(0, 1), log_r(1, 0), log_r(1, 1)], axis=-1).reshape(T,K,-1)
         log_r_i -= logsumexp(log_r_i)[...,None]
-        z_pairstats = np.exp(log_r_i).reshape(T,K,2,2)
+        p = np.exp(log_r_i).reshape(T,K,C,2,2)
+        assert(np.allclose(1, np.sum(p, axis=(2,3,4))))
+        m = mvp(Psi, h_prior + h_rec[...,None,None,:]) # (T, K, C, 2, 2, N)
+        stats = gaussian.pack_dense(Psi + outer(m, m), m, np.ones((T,K,C,2,2)), np.ones((T,K,C,2,2)))
+        return np.sum(p[...,None,None] * stats, axis=(2,3,4)) # (T, K, N, N)
 
-        m = mvp(Psi, h_prior + h_rec[:,:,None,None,:]) # (T, 2, 2, N)
-        stats = gaussian.pack_dense(Psi + outer(m, m), m, np.ones((T,K,2,2)), np.ones((T,K,2,2)))
-        return np.sum(z_pairstats[...,None,None] * stats, axis=(2,3))
-
-    log_r_i = np.stack([log_r(0, 0), log_r(0, 1), log_r(1, 0), log_r(1, 1)], axis=-1)
+    log_r_i = logsumexp(np.stack([log_r(0, 0), log_r(0, 1), log_r(1, 0), log_r(1, 1)], axis=-1), axis=-2)
     log_r_i -= logsumexp(log_r_i)[...,None]
     g_j_left = np.roll(g_j, 1, axis=1)
     g_i_right = np.roll(g_i, -1, axis=1)
@@ -150,16 +152,17 @@ def _global_kl(global_prior_natparams, global_natparams):
     return np.dot(natparam_difference, stats) - np.sum(logZ_difference)
 
 def _local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
-    T, K, N = encoder_potentials[0].shape
+    T, K, _, N = encoder_potentials[0].shape
+
+    encoder_potentials = \
+        np.squeeze(encoder_potentials[0], axis=-2), np.squeeze(encoder_potentials[1], axis=-2)
 
     def make_fpfun((global_stats, encoder_potentials)):
         return lambda x: \
             _local_mf_update(global_stats, encoder_potentials, *x)
 
     def diff(x, x_prev):
-        return np.sum(np.abs(x_prev[0][0] - x[0][0])) \
-            + np.sum(np.abs(x_prev[0][1][0] - x[0][1][0])) \
-            + np.sum(np.abs(x_prev[0][1][1] - x[0][1][1]))
+        return np.sum(np.abs(x_prev[0][0] - x[0][0])) + np.sum(np.abs(x_prev[0][1] - x[0][1]))
 
     def init_x0():
         z_natparams = npr.randn(T,K)
@@ -191,16 +194,14 @@ def local_natparams_mf(global_prior_natparams, global_natparams, global_stats, e
     return local_natparams
 
 def _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
-    T, K, N = encoder_potentials[0].shape
+    T, K, C, N = encoder_potentials[0].shape
 
     def make_fpfun((global_stats, encoder_potentials)):
         return lambda x: \
             _local_ep_update(global_stats, encoder_potentials, x[2])
 
     def diff(x, x_prev):
-        return np.sum(np.abs(x_prev[0][0] - x[0][0])) \
-            + np.sum(np.abs(x_prev[0][1][0] - x[0][1][0])) \
-            + np.sum(np.abs(x_prev[0][1][1] - x[0][1][1]))
+        return np.sum(np.abs(x_prev[0][0] - x[0][0])) + np.sum(np.abs(x_prev[0][1] - x[0][1]))
 
     def init_x0():
         z_natparams = npr.randn(T, K)
@@ -229,20 +230,6 @@ def local_natparams_ep(global_prior_natparams, global_natparams, global_stats, e
     _, local_natparams, _, _, _ = \
         _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, 0)
     return local_natparams
-
-def init_pgm_natparams(K, N, alpha, niw_conc=10., random_scale=0.):
-    def init_niw_natparam():
-        nu, kappa = np.ones((2,2))*(N+niw_conc), np.ones((2,2))*niw_conc
-        # m = np.zeros((2,2,N))
-        S = .5*np.tile(np.eye(N), (2,2,1,1))
-        #.25*np.tile((N+niw_conc)*np.eye(N), (2,2,1,1))
-        m = 1.25*np.array([[[0,1],[1,0]],[[0,-1],[-1,0]]]) # m + random_scale * npr.randn(*m.shape)
-        return niw.standard_to_natural(S, m, kappa, nu)
-
-    beta_natparam = alpha * (npr.rand(K,2) if random_scale else np.ones((K,2)))
-    niw_natparam = init_niw_natparam()
-
-    return (beta_natparam[:,0], beta_natparam[:,1]), niw_natparam
 
 def pgm_expectedstats(natparams):
     return beta.expectedstats(*natparams[0]), niw.expectedstats(natparams[1])

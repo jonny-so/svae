@@ -38,9 +38,9 @@ def expand_diagonal(x):
 def mvp(A, b):
     return np.sum(A*b[...,None,:], axis=-1)
 
-def logsumexp(x):
-    m = np.max(x, axis=-1)
-    return m + np.log(np.sum(np.exp(x - m[...,None]), axis=-1))
+def logsumexp(x, axis=-1):
+    m = np.max(x, axis=axis, keepdims=True)
+    return np.squeeze(m, axis=axis) + np.log(np.sum(np.exp(x - m), axis=axis))
 
 def replace(x, a, i, axis=-1):
     if axis < 0: axis = x.ndim  + axis

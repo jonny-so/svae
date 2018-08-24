@@ -6,9 +6,9 @@ import scipy.stats
 import pickle
 from matplotlib.colors import LinearSegmentedColormap
 
-from svae.nnet import init_gresnet, gaussian_mean, gaussian_info, make_loglike
+from svae.nnet import init_gresnet, init_gresnet_mix, gaussian_mean, make_loglike
 from svae.distributions import gaussian, niw
-from svae.models.gmm_cycle import init_pgm_natparams, local_inference_ep, local_natparams_ep, pgm_expectedstats
+from svae.models.gmm_cycle import local_inference_ep, local_natparams_ep, pgm_expectedstats
 from svae.optimizers import adam
 from svae.svae import make_gradfun
 from svae.util import expand_diagonal, mvp
@@ -20,10 +20,10 @@ def create_gmm_cycle_2d_data(alpha, beta, K, T):
 
     N = P = 2 # N latent dimensions, P observed dimensions
     pi = npr.beta(alpha, beta, K)
-    mu = 1.25*np.array([[[0,1],[1,0]],[[0,-1],[-1,0]]])
+    mu = np.array([[[1,0],[0,1]],[[0,-1],[-1,0]]])
 
     V = .0075*np.array([
-        [[[1, 0], [0, 15]], [[15, 0], [0, 1]]],
+        [[[15, 0], [0, 1]], [[1, 0], [0, 15]]],
         [[[1, 0], [0, 15]], [[15, 0], [0, 1]]]])
     z = npr.binomial(1, pi, (T, K))
 
@@ -48,6 +48,10 @@ def create_gmm_cycle_2d_data(alpha, beta, K, T):
 
     return pi, mu, V, y, z
 
+def rotate(X, t):
+    A = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+    return np.matmul(A, X)
+
 colors = np.array([
     [106,61,154],  # Dark colors
     [31,120,180],
@@ -66,7 +70,7 @@ def get_hexbin_coords(ax, xlims, ylims, gridsize):
     del ax.collections[-1]
     return coords
 
-def plot_transparent_hexbin(ax, func, xlims, ylims, gridsize, color):
+def plot_transparent_hexbin(ax, func, xlims, ylims, gridsize, color, scale=False):
     cdict = {'red':   ((0., color[0], color[0]), (1., color[0], color[0])),
              'green': ((0., color[1], color[1]), (1., color[1], color[1])),
              'blue':  ((0., color[2], color[2]), (1., color[2], color[2])),
@@ -77,6 +81,7 @@ def plot_transparent_hexbin(ax, func, xlims, ylims, gridsize, color):
 
     coords = get_hexbin_coords(ax, xlims, ylims, gridsize)
     c = func(coords)
+    c = c if not scale else c / np.max(c)
     x, y = coords.T
 
     ax.hexbin(x.ravel(), y.ravel(), c.ravel(),
@@ -124,9 +129,12 @@ def plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes):
             data_ellipse = decoder(gamma, latent_ellipse)[0]
             plot_or_update(c+2, ax, data_ellipse[:, 0], data_ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
 
-def plot_latent_space(pi, mu, V, x_enc, x_hat, axes):
+def plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes):
+
+    x_enc_mu = np.sum(x_enc*x_encW[...,None], axis=-2)
+
     for i, ax in zip(xrange(len(axes)), axes):
-        plot_or_update(0, ax, x_enc[:,i,0], x_enc[:,i,1], color='k', marker='.', linestyle='', markersize=1)
+        plot_or_update(0, ax, x_enc_mu[:,i,0], x_enc_mu[:,i,1], color='k', marker='.', linestyle='', markersize=1)
         plot_or_update(1, ax, x_hat[:,i,0], x_hat[:,i,1], color='r', marker='.', linestyle='', markersize=4)
 
         j = (i + 1) % K
@@ -155,9 +163,9 @@ def plot_data_density(decoder, gamma, pi, mu, V, y, axes):
             density = decode_density(samples, gamma, decoder, w)
             plot_transparent_hexbin(ax, density, xlim, ylim, 75, colors[c % len(colors)])
 
-def plot_encoder_potential(encoder, phi, decoder, gamma, y, y_hat, t, i, ax):
-    xlim, ylim = (-2,2), (-2,2)
+def plot_encoder_potential(encoder, phi, decoder, gamma, t, i, ax):
     ax.clear()
+    xlim, ylim = (-2,2), (-2,2)
     ax.set_ylim(*xlim)
     ax.set_xlim(*ylim)
     ax.set_aspect('equal')
@@ -166,15 +174,18 @@ def plot_encoder_potential(encoder, phi, decoder, gamma, y, y_hat, t, i, ax):
     encoder_out = encoder(phi, y)
     x_encV, x_enc = gaussian.natural_to_standard(
         gaussian.pack_dense(encoder_out[0], encoder_out[1]))
+    x_encW = encoder_out[2]
 
     density = reverse_density(y[t,i], gamma, decoder, 1.)
-    plot_transparent_hexbin(ax, density, xlim, ylim, 75)
-    ellipse = create_ellipse(x_enc[t,i], x_encV[t,i])
-    plot_or_update(ax, 0, y[t,i,0], y[t,i,1], linestyle='', marker='x')
-    plot_or_update(ax, 1, x_enc[t,i,0], x_enc[t,i,1], linestyle='', marker='o')
-    plot_or_update(ax, 2, ellipse[:, 0], ellipse[:, 1], linestyle='-', linewidth=1)
+    plot_transparent_hexbin(ax, density, xlim, ylim, 75, np.array([1.,0,0]), scale=True)
 
-def make_plotter(encoder, decoder, global_prior_natparams, params, y):
+    for k in xrange(x_encW.shape[-1]):
+        ellipse = create_ellipse(x_enc[t,i,k], x_encV[t,i,k])
+        weight = x_encW[t,i,k]/np.max(x_encW[t,i])
+        plot_or_update(k*2+1, ax, x_enc[t,i,k,0], x_enc[t,i,k,1], linestyle='', marker='.', markersize=2, color='b', alpha=weight)
+        plot_or_update(k*2+2, ax, ellipse[:,0], ellipse[:,1], linestyle='-', linewidth=1, color='b', alpha=weight)
+
+def make_plotter(encoder, decoder, global_prior_natparams, y, plot_every=10):
     T, K, _ = y.shape
     figure, axes = plt.subplots(3, K, figsize=(2*K,6))
 
@@ -192,15 +203,16 @@ def make_plotter(encoder, decoder, global_prior_natparams, params, y):
 
     figure.tight_layout()
 
-    def plot(iter, val, params, grad):
+    def plot(iter, val, params, _):
         print('{}: {}'.format(iter, val))
-        if iter % 10 == 0:
+        if iter % plot_every == 0:
             global_natparams, gamma, phi = params
             global_stats = pgm_expectedstats(global_natparams)
 
             encoder_out = encoder(phi, y)
             x_encV, x_enc = gaussian.natural_to_standard(
                 gaussian.pack_dense(encoder_out[0], encoder_out[1]))
+            x_encW = encoder_out[2]
 
             local_natparams = local_natparams_ep(
                 global_prior_natparams, global_natparams, global_stats, encoder_out)
@@ -215,7 +227,7 @@ def make_plotter(encoder, decoder, global_prior_natparams, params, y):
             V = gaussian.natural_to_standard(niw_stats)[0].reshape(4,2,2)
 
             plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes[0])
-            plot_latent_space(pi, mu, V, x_enc, x_hat, axes[1])
+            plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes[1])
 
             if iter % 100 == 0:
                 plot_data_density(decoder, gamma, pi, mu, V, y, axes[2])
@@ -224,15 +236,24 @@ def make_plotter(encoder, decoder, global_prior_natparams, params, y):
 
     return plot
 
-def save_figures(params, encoder, decoder, y, scale=4):
+def save_figures(fileprefix, params, encoder, decoder, y, scale=4):
 
     def save_figure(fig, filename):
         fig.savefig(filename + '.png', dpi=300, bbox_inches='tight', pad_inches=0)
         print 'saved {}'.format(filename)
 
-    fig_density, axes_density = plt.subplots(1, K, figsize=(scale*K, scale))
-    fig_latent, axes_latent = plt.subplots(1, K, figsize=(scale*K, scale))
-    fig_data, axes_data = plt.subplots(1, K, figsize=(scale*K, scale))
+    def make_figure(K, xlim, ylim):
+        fig, ax = plt.subplots(1, K, figsize=(scale*K, scale))
+        for k in xrange(K):
+            ax[k].set_xlim(*xlim)
+            ax[k].set_ylim(*ylim)
+            ax[k].set_aspect('equal')
+            ax[k].autoscale(False)
+        return fig, ax
+
+    fig_density, axes_density = make_figure(K, (-2,2), (-2,2))
+    fig_latent, axes_latent = make_figure(K, (-3,3), (-3,3))
+    fig_data, axes_data = make_figure(K, (-2,2), (-2,2))
 
     global_natparams, gamma, phi = params
     global_stats = pgm_expectedstats(global_natparams)
@@ -240,6 +261,7 @@ def save_figures(params, encoder, decoder, y, scale=4):
     encoder_out = encoder(phi, y)
     x_encV, x_enc = gaussian.natural_to_standard(
         gaussian.pack_dense(encoder_out[0], encoder_out[1]))
+    x_encW = encoder_out[2]
 
     local_natparams = local_natparams_ep(
         global_prior_natparams, global_natparams, global_stats, encoder_out)
@@ -255,31 +277,44 @@ def save_figures(params, encoder, decoder, y, scale=4):
 
     plot_data_density(decoder, gamma, pi, mu, V, y, axes_density)
     plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes_data)
-    plot_latent_space(pi, mu, V, x_enc, x_hat, axes_latent)
+    plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes_latent)
 
-    save_figure(fig_density, 'figures/gmm_cycle_ep_density')
-    save_figure(fig_data, 'figures/gmm_cycle_ep_data')
-    save_figure(fig_latent, 'figures/gmm_cycle_ep_latent')
+    save_figure(fig_density, 'figures/' + fileprefix + '_density')
+    save_figure(fig_data, 'figures/' + fileprefix + '_data')
+    save_figure(fig_latent, 'figures/' + fileprefix + '_latent')
 
-    for t in xrange(3):
-        fig_enc, axes_enc = plt.subplots(1, 1, figsize=(scale, scale))
-        plot_encoder_potential(encoder, phi, decoder, gamma, y, y_hat, t, 0, axes_enc[0,0])
-        save_figure(fig_enc, 'figures/epsvae_encoder_' + str(t))
+    for t in xrange(5):
+        fig_enc, axis_enc = plt.subplots(1, 1, figsize=(scale, scale))
+        plot_encoder_potential(encoder, phi, decoder, gamma, t, 0, axis_enc)
+        save_figure(fig_enc, 'figures/' + fileprefix + '_encoder' + str(t))
 
     plt.close('all')
+
+def init_pgm_natparams(K, N, alpha, niw_conc=10., random_scale=0.):
+    def init_niw_natparam():
+        nu, kappa = np.ones((2,2))*(N+niw_conc), np.ones((2,2))*niw_conc
+        S = .5*np.tile(np.eye(N), (2,2,1,1))
+        m = rotate(np.array([[1,0],[0,1],[0,-1],[-1,0]]).T, npr.rand()*2*np.pi).T.reshape(2,2,2)
+        return niw.standard_to_natural(S, m, kappa, nu)
+
+    beta_natparam = alpha * (npr.rand(K,2) if random_scale else np.ones((K,2)))
+    niw_natparam = init_niw_natparam()
+
+    return (beta_natparam[:,0], beta_natparam[:,1]), niw_natparam
 
 if __name__ == "__main__":
     N = P = 2
     K = 3
+    C = 2
     T = 800
     npr.seed(0)
     _, _, _, y, _ = create_gmm_cycle_2d_data(20, 20, K, T)
 
     # construct recognition and decoder networks and initialize them
     encoder, phi = \
-        init_gresnet(P, [(40, np.tanh), (40, np.tanh), (40, np.tanh), (40, np.tanh), (2*N, gaussian_info)])
+        init_gresnet_mix(P, N, 1, [(40, np.tanh) for _ in xrange(7)])
     decoder, gamma = \
-        init_gresnet(N, [(40, np.tanh), (40, np.tanh), (40, np.tanh), (2*P, gaussian_mean)])
+        init_gresnet(N, [(40, np.tanh) for _ in xrange(3)] + [(2*P, gaussian_mean)])
     loglike = make_loglike(decoder)
 
     # global prior and variational posterior natparams
@@ -289,13 +324,14 @@ if __name__ == "__main__":
     params = global_natparams, gamma, phi
     # params = pickle.load(open('params.pkl'))
 
-    plot = make_plotter(encoder, decoder, global_prior_natparams, params, y)
+    plot = make_plotter(encoder, decoder, global_prior_natparams, y)
+
     gradfun = make_gradfun(
         local_inference_ep, encoder, loglike, global_prior_natparams, pgm_expectedstats, y)
 
     params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
-                 params, num_iters=1000, step_size=1e-3)
+                  params, num_iters=1000, step_size=1e-3)
 
-    pickle.dump(params, open('params_ep.pkl', 'wb'))
-
-    save_figures(params, encoder, decoder, y)
+    prefix = 'gmm_cycle_10k_m1'
+    pickle.dump(params, open(prefix + '.pkl', 'wb'))
+    save_figures(prefix, params, encoder, decoder, y)
