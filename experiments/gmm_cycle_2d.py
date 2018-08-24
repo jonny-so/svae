@@ -7,13 +7,13 @@ import pickle
 from matplotlib.colors import LinearSegmentedColormap
 
 from svae.nnet import init_gresnet, gaussian_mean, gaussian_info, make_loglike
-from svae.distributions import beta, gaussian, niw
-from svae.models.gmm_cycle import init_global_natparams, local_inference_ep, local_natparams_ep, pgm_expectedstats
+from svae.distributions import gaussian, niw
+from svae.models.gmm_cycle import init_pgm_natparams, local_inference_ep, local_natparams_ep, pgm_expectedstats
 from svae.optimizers import adam
 from svae.svae import make_gradfun
 from svae.util import expand_diagonal, mvp
 
-# alpha, beta - (shared) beta prior hyper-parameters for pi
+# alpha, beta - beta prior hyper-parameters for pi
 # K - length of cycle / number of dependent observations
 # N - number of independent samples
 def create_gmm_cycle_2d_data(alpha, beta, K, T):
@@ -93,79 +93,104 @@ def decode_density(latent_locations, gamma, decode, weight=1.):
     return density
 
 def reverse_density(y, gamma, decode, weight=1.):
-
     def density(r):
         mu, sigmasq = decode(gamma, r)
         distances = np.sqrt(((mu - y)**2 / sigmasq).sum(1))
         return weight * (scipy.stats.norm.pdf(distances) / np.sqrt(sigmasq).prod(1))
-
     return density
+
+def create_ellipse(mean, cov, sd=2.):
+    t = np.linspace(0, 2*np.pi, 100) % (2*np.pi)
+    circle = np.vstack((np.sin(t), np.cos(t)))
+    return (sd*np.dot(np.linalg.cholesky(cov), circle) + mean[:,None]).T
+
+def plot_or_update(idx, ax, x, y, alpha=1, **kwargs):
+    if len(ax.lines) > idx:
+        ax.lines[idx].set_data((x, y))
+        ax.lines[idx].set_alpha(alpha)
+    else:
+        ax.plot(x, y, alpha=alpha, **kwargs)
+
+def plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes):
+    for i, ax in zip(xrange(len(axes)), axes):
+        plot_or_update(0, ax, y[:,i,0], y[:,i,1], color='k', marker='.', linestyle='', markersize=1)
+        plot_or_update(1, ax, y_hat[:,i,0], y_hat[:,i,1], color='r', marker='.', linestyle='', markersize=4)
+
+        j = (i + 1) % K
+        weights = (1 - pi[i]) * (1 - pi[j]), pi[i] * (1 - pi[j]), (1 - pi[i]) * pi[j], pi[i] * pi[j]
+        weights = weights / np.max(weights)
+        for (c, m, v, w) in zip(range(4), mu, V, weights):
+            latent_ellipse = create_ellipse(m, v)
+            data_ellipse = decoder(gamma, latent_ellipse)[0]
+            plot_or_update(c+2, ax, data_ellipse[:, 0], data_ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
+
+def plot_latent_space(pi, mu, V, x_enc, x_hat, axes):
+    for i, ax in zip(xrange(len(axes)), axes):
+        plot_or_update(0, ax, x_enc[:,i,0], x_enc[:,i,1], color='k', marker='.', linestyle='', markersize=1)
+        plot_or_update(1, ax, x_hat[:,i,0], x_hat[:,i,1], color='r', marker='.', linestyle='', markersize=4)
+
+        j = (i + 1) % K
+        weights = (1 - pi[i]) * (1 - pi[j]), pi[i] * (1 - pi[j]), (1 - pi[i]) * pi[j], pi[i] * pi[j]
+        weights = weights / np.max(weights)
+        for (c, m, v, w) in zip(range(4), mu, V, weights):
+            latent_ellipse = create_ellipse(m, v)
+            plot_or_update(c+2, ax, latent_ellipse[:, 0], latent_ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
+
+def plot_data_density(decoder, gamma, pi, mu, V, y, axes):
+    xlim, ylim = (-2,2), (-2,2)
+
+    for i, ax in zip(xrange(len(axes)), axes):
+        ax.clear()
+        ax.set_ylim(*xlim)
+        ax.set_xlim(*ylim)
+        ax.set_aspect('equal')
+        ax.autoscale(False)
+        plot_or_update(0, ax, y[:,i,0], y[:,i,1], color='k', marker='.', linestyle='', markersize=1)
+
+        j = (i + 1) % K
+        weights = (1 - pi[i]) * (1 - pi[j]), pi[i] * (1 - pi[j]), (1 - pi[i]) * pi[j], pi[i] * pi[j]
+        weights = weights / np.max(weights)
+        for (c, m, v, w) in zip(range(4), mu, V, weights):
+            samples = npr.RandomState(0).multivariate_normal(m, v, 1000)
+            density = decode_density(samples, gamma, decoder, w)
+            plot_transparent_hexbin(ax, density, xlim, ylim, 75, colors[c % len(colors)])
+
+def plot_encoder_potential(encoder, phi, decoder, gamma, y, y_hat, t, i, ax):
+    xlim, ylim = (-2,2), (-2,2)
+    ax.clear()
+    ax.set_ylim(*xlim)
+    ax.set_xlim(*ylim)
+    ax.set_aspect('equal')
+    ax.autoscale(False)
+
+    encoder_out = encoder(phi, y)
+    x_encV, x_enc = gaussian.natural_to_standard(
+        gaussian.pack_dense(encoder_out[0], encoder_out[1]))
+
+    density = reverse_density(y[t,i], gamma, decoder, 1.)
+    plot_transparent_hexbin(ax, density, xlim, ylim, 75)
+    ellipse = create_ellipse(x_enc[t,i], x_encV[t,i])
+    plot_or_update(ax, 0, y[t,i,0], y[t,i,1], linestyle='', marker='x')
+    plot_or_update(ax, 1, x_enc[t,i,0], x_enc[t,i,1], linestyle='', marker='o')
+    plot_or_update(ax, 2, ellipse[:, 0], ellipse[:, 1], linestyle='-', linewidth=1)
 
 def make_plotter(encoder, decoder, global_prior_natparams, params, y):
     T, K, _ = y.shape
     figure, axes = plt.subplots(3, K, figsize=(2*K,6))
 
-    def create_ellipse(mean, cov, sd=2.):
-        t = np.linspace(0, 2*np.pi, 100) % (2*np.pi)
-        circle = np.vstack((np.sin(t), np.cos(t)))
-        return (sd*np.dot(np.linalg.cholesky(cov), circle) + mean[:,None]).T
+    for i in range(K):
+        # data space
+        axes[0, i].set_ylim(-2,2)
+        axes[0, i].set_xlim(-2,2)
+        axes[0, i].set_aspect('equal')
+        axes[0, i].autoscale(False)
+        # latent space
+        axes[1, i].set_ylim(-2,2)
+        axes[1, i].set_xlim(-2,2)
+        axes[1, i].set_aspect('equal')
+        axes[1, i].autoscale(False)
 
-    def init():
-        global_natparams, gamma, phi = params
-        global_stats = pgm_expectedstats(global_natparams)
-
-        encoder_out = encoder(phi, y)
-        x_encV, x_enc = gaussian.natural_to_standard(
-            gaussian.pack_dense(encoder_out[0], encoder_out[1]))
-
-        local_natparams = local_natparams_ep(
-            global_prior_natparams, global_natparams, global_stats, encoder_out)
-        x_hatV, x_hat = gaussian.natural_to_standard(local_natparams[1])
-
-        decoder_out = decoder(gamma, x_hat)
-        y_hat, y_hatV = decoder_out[0], expand_diagonal(decoder_out[1])
-        # y_hat = np.mean(decoder(gamma, gaussian.random_samples(encoder_out[1], expand_diagonal(encoder_out[0]), 100))[0], axis=0)
-        pi = global_natparams[0][0] / (global_natparams[0][0] + global_natparams[0][1])
-        niw_stats = niw.expectedstats(global_natparams[1])
-        mu = gaussian.natural_to_standard(niw_stats)[1].reshape(4,2)
-        V = gaussian.natural_to_standard(niw_stats)[0].reshape(4,2,2)
-
-        for i in range(K):
-            # data space
-            axes[0, i].set_ylim(-2,2)
-            axes[0, i].set_xlim(-2,2)
-            axes[0, i].set_aspect('equal')
-            axes[0, i].autoscale(False)
-            axes[0, i].plot(y[:,i,0], y[:,i,1], color='k', marker='.', linestyle='', markersize=1)
-            axes[0, i].plot(y_hat[:,i,0], y_hat[:,i,1], color='r', marker='.', linestyle='', markersize=4)
-            # latent space
-            axes[1, i].set_ylim(-2,2)
-            axes[1, i].set_xlim(-2,2)
-            axes[1, i].set_aspect('equal')
-            axes[1, i].autoscale(False)
-            axes[1, i].plot(x_hat[:,i,0], x_hat[:,i,1], color='r', marker='.', linestyle='', markersize=2)
-            axes[1, i].plot(x_enc[:,i,0], x_enc[:,i,1], color='k', marker='.', linestyle='', markersize=1)
-
-            # gaussian priors
-            j = (i + 1) % K
-            weights = (1 - pi[i]) * (1 - pi[j]), pi[i] * (1 - pi[j]), (1 - pi[i]) * pi[j], pi[i] * pi[j]
-            weights = weights / np.max(weights)
-            for (m, v, w) in zip(mu, V, weights):
-                latent_ellipse = create_ellipse(m, v)
-                data_ellipse = decoder(gamma, latent_ellipse)[0]
-                axes[0, i].plot(data_ellipse[:, 0], data_ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
-                axes[1, i].plot(latent_ellipse[:, 0], latent_ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
-
-            # for (m, v) in zip(y_hat[0:3,i], y_hatV[0:3,i]):
-            #     ellipse = create_ellipse(m, v)
-            #     axes[0, i].plot(ellipse[:, 0], ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
-            # for (m, v) in zip(x_hat[0:10,i], x_hatV[0:10,i]):
-            #     ellipse = create_ellipse(m, v)
-            #     axes[1, i].plot(ellipse[:, 0], ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
-            plt.pause(0.1)
-
-        figure.tight_layout()
-        plt.pause(.5)
+    figure.tight_layout()
 
     def plot(iter, val, params, grad):
         print('{}: {}'.format(iter, val))
@@ -189,91 +214,66 @@ def make_plotter(encoder, decoder, global_prior_natparams, params, y):
             mu = gaussian.natural_to_standard(niw_stats)[1].reshape(4,2)
             V = gaussian.natural_to_standard(niw_stats)[0].reshape(4,2,2)
 
-            for i in range(K):
-                axes[0, i].lines[1].set_data(y_hat[:,i,0], y_hat[:,i,1])
-                axes[1, i].lines[0].set_data(x_hat[:, i, 0], x_hat[:, i, 1])
-                axes[1, i].lines[1].set_data(x_enc[:, i, 0], x_enc[:, i, 1])
+            plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes[0])
+            plot_latent_space(pi, mu, V, x_enc, x_hat, axes[1])
 
-                if iter % 100 == 0:
-                    axes[2,i].clear()
-                    axes[2, i].set_ylim(-2,2)
-                    axes[2, i].set_xlim(-2,2)
-                    axes[2, i].set_aspect('equal')
-                    axes[2, i].autoscale(False)
-                    axes[2, i].plot(y[:,i,0], y[:,i,1], color='k', marker='.', linestyle='', markersize=1)
-
-                # gaussian priors
-                j = (i + 1) % K
-                weights = (1 - pi[i]) * (1 - pi[j]), pi[i] * (1 - pi[j]), (1 - pi[i]) * pi[j], pi[i] * pi[j]
-                weights = weights / np.max(weights)
-                for (k, m, v, w) in zip(range(4), mu, V, weights):
-                    latent_ellipse = create_ellipse(m, v)
-                    data_ellipse = decoder(gamma, latent_ellipse)[0]
-                    axes[0, i].lines[k+2].set_data(data_ellipse[:,0], data_ellipse[:,1])
-                    axes[0, i].lines[k+2].set_alpha(w)
-                    axes[1, i].lines[k+2].set_data(latent_ellipse[:,0], latent_ellipse[:,1])
-                    axes[1, i].lines[k+2].set_alpha(w)
-
-                    # if iter == 200:
-                    #     gridsize = 75
-                    #     num_samples = 1000
-                    #     xlim, ylim = axes[0, i].get_xlim(), axes[0, i].get_ylim()
-                    #     samples = npr.RandomState(0).multivariate_normal(m, v, num_samples)
-                    #     density = decode_density(samples, gamma, decoder, w)
-                    #     plot_transparent_hexbin(axes[0, i], density, xlim, ylim, gridsize, colors[k % len(colors)])
-
-                    if iter % 100 == 0:
-                        xlim, ylim = axes[2, i].get_xlim(), axes[2, i].get_ylim()
-
-                        gridsize = 75
-                        num_samples = 1000
-                        samples = npr.RandomState(0).multivariate_normal(m, v, num_samples)
-                        density = decode_density(samples, gamma, decoder, w)
-                        plot_transparent_hexbin(axes[2, i], density, xlim, ylim, gridsize, colors[k % len(colors)])
-
-                # for (n, m, v) in zip(range(y_hat.shape[0]), y_hat[0:3,i], y_hatV[0:3,i]):
-                #     ellipse = create_ellipse(m, v)
-                #     axes[0, i].lines[6+n].set_data(ellipse[:, 0], ellipse[:, 1])
-
-                # for (n, m, v) in zip(range(x_hat.shape[0]), x_hat[0:10,i], x_hatV[0:10,i]):
-                #     ellipse = create_ellipse(m, v)
-                #     axes[1, i].lines[5+n].set_data(ellipse[:, 0], ellipse[:, 1])
-
-                # if iter % 10 == 0:
-
-                    # gridsize = 75
-                    # axes[2,i].clear()
-                    # axes[2, i].set_ylim(-2,2)
-                    # axes[2, i].set_xlim(-2,2)
-                    # axes[2, i].set_aspect('equal')
-                    # axes[2, i].autoscale(False)
-                    # xlim, ylim = axes[2, i].get_xlim(), axes[2, i].get_ylim()
-
-                    # j = npr.randint(0, y_hat.shape[0])
-                    # density = reverse_density(y[j,i], gamma, decoder, 1.)
-                    # plot_transparent_hexbin(axes[2, i], density, xlim, ylim, gridsize, colors[k % len(colors)])
-                    # foo, bar = gaussian.natural_to_standard(encoder_out[0][j,i], expand_diagonal(encoder_out[1])[j,i])
-                    # ellipse = create_ellipse(foo, bar)
-                    # axes[2,i].plot(y[j,i,0], y[j,i,1], linestyle='', marker='x')
-                    # axes[2,i].plot(foo[0], foo[1], linestyle='', marker='o')
-                    # axes[2,i].plot(ellipse[:, 0], ellipse[:, 1], linestyle='-', linewidth=1)
+            if iter % 100 == 0:
+                plot_data_density(decoder, gamma, pi, mu, V, y, axes[2])
 
             plt.pause(0.1)
 
-    init()
-
     return plot
+
+def save_figures(params, encoder, decoder, y, scale=4):
+
+    def save_figure(fig, filename):
+        fig.savefig(filename + '.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        print 'saved {}'.format(filename)
+
+    fig_density, axes_density = plt.subplots(1, K, figsize=(scale*K, scale))
+    fig_latent, axes_latent = plt.subplots(1, K, figsize=(scale*K, scale))
+    fig_data, axes_data = plt.subplots(1, K, figsize=(scale*K, scale))
+
+    global_natparams, gamma, phi = params
+    global_stats = pgm_expectedstats(global_natparams)
+
+    encoder_out = encoder(phi, y)
+    x_encV, x_enc = gaussian.natural_to_standard(
+        gaussian.pack_dense(encoder_out[0], encoder_out[1]))
+
+    local_natparams = local_natparams_ep(
+        global_prior_natparams, global_natparams, global_stats, encoder_out)
+    x_hatV, x_hat = gaussian.natural_to_standard(local_natparams[1])
+
+    decoder_out = decoder(gamma, x_hat)
+    y_hat, y_hatV = decoder_out[0], expand_diagonal(decoder_out[1])
+
+    pi = global_natparams[0][0] / (global_natparams[0][0] + global_natparams[0][1])
+    niw_stats = niw.expectedstats(global_natparams[1])
+    mu = gaussian.natural_to_standard(niw_stats)[1].reshape(4,2)
+    V = gaussian.natural_to_standard(niw_stats)[0].reshape(4,2,2)
+
+    plot_data_density(decoder, gamma, pi, mu, V, y, axes_density)
+    plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes_data)
+    plot_latent_space(pi, mu, V, x_enc, x_hat, axes_latent)
+
+    save_figure(fig_density, 'figures/gmm_cycle_ep_density')
+    save_figure(fig_data, 'figures/gmm_cycle_ep_data')
+    save_figure(fig_latent, 'figures/gmm_cycle_ep_latent')
+
+    for t in xrange(3):
+        fig_enc, axes_enc = plt.subplots(1, 1, figsize=(scale, scale))
+        plot_encoder_potential(encoder, phi, decoder, gamma, y, y_hat, t, 0, axes_enc[0,0])
+        save_figure(fig_enc, 'figures/epsvae_encoder_' + str(t))
+
+    plt.close('all')
 
 if __name__ == "__main__":
     N = P = 2
     K = 3
     T = 800
-    # V = .25*np.array([[2,1],[1,2]])
     npr.seed(0)
-    pi, mu, V, y, z = create_gmm_cycle_2d_data(20, 20, K, T)
-    V = 2*np.tile(np.eye(N), (2,2,1,1))
-    #V = 2*np.tile(np.eye(N), (2,2,1,1))
-    J = np.linalg.inv(V)
+    _, _, _, y, _ = create_gmm_cycle_2d_data(20, 20, K, T)
 
     # construct recognition and decoder networks and initialize them
     encoder, phi = \
@@ -283,8 +283,8 @@ if __name__ == "__main__":
     loglike = make_loglike(decoder)
 
     # global prior and variational posterior natparams
-    global_prior_natparams = init_global_natparams(K, N, alpha=0.5/K, niw_conc=100.)
-    global_natparams = init_global_natparams(K, N, alpha=1., niw_conc=0.5, random_scale=1.0)
+    global_prior_natparams = init_pgm_natparams(K, N, alpha=0.5/K, niw_conc=100.)
+    global_natparams = init_pgm_natparams(K, N, alpha=1., niw_conc=0.5, random_scale=1.0)
 
     params = global_natparams, gamma, phi
     # params = pickle.load(open('params.pkl'))
@@ -294,5 +294,8 @@ if __name__ == "__main__":
         local_inference_ep, encoder, loglike, global_prior_natparams, pgm_expectedstats, y)
 
     params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
-                 params, num_iters=10000, step_size=1e-3)
-    pickle.dump(params, open('params_10k.pkl', 'wb'))
+                 params, num_iters=1000, step_size=1e-3)
+
+    pickle.dump(params, open('params_ep.pkl', 'wb'))
+
+    save_figures(params, encoder, decoder, y)

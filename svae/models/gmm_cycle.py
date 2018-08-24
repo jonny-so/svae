@@ -1,8 +1,6 @@
 import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd.misc.fixed_points import fixed_point
-from autograd.core import getval
-from toolz import curry
 
 from svae.distributions import bernoulli, beta, gaussian, niw
 from svae.util import flat, expand_diagonal, logsumexp, mvp, replace, outer, symmetrize, unbox
@@ -16,17 +14,8 @@ def _z_pairstats(z_stats):
 
 def _z_kl(beta_stats, z_natparams, z_stats):
     z_prior_natparams = beta_stats[0] - beta_stats[1]
-
     kl = (z_natparams - z_prior_natparams) * z_stats \
         - bernoulli.logZ(z_natparams) - beta_stats[1]
-
-    assert (kl.shape == z_natparams.shape)
-    assert(np.all(np.isfinite(z_natparams)))
-    assert(np.all(np.isfinite(z_prior_natparams)))
-    assert(np.allclose(z_stats, bernoulli.natural_to_mean(z_natparams)))
-    assert(np.all(z_stats > 0))
-    assert(np.all(z_stats <= 1))
-    assert(np.all(kl >= 0))
     return np.sum(kl)
 
 def _x_kl(niw_stats, x_natparams, x_stats, z_stats):
@@ -42,16 +31,10 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
     z_prior = beta_stats[0] - beta_stats[1]
     J_prior, h_prior = -2*symmetrize(niw_stats[0]), niw_stats[1]
 
-    # mu_prior, _ = gaussian.natural_to_mean(h_prior, -.5*J_prior)
     z_natparams, x_natparams = local_natparams
     z_stats, x_stats = local_stats
 
     encoder_potentials = gaussian.pack_dense(*encoder_potentials)
-
-    def surrogate_elbo(local_natparams, local_stats):
-        local_kl = _local_kl(global_stats, local_natparams, local_stats)
-        other = np.tensordot(local_stats[1], encoder_potentials, 4)
-        return local_kl + other
 
     def update_discrete(i):
         h = (i - 1) % K
@@ -61,9 +44,6 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
         EmuJmuT = -2*niw_stats[2] # np.sum(mu_prior * mvp(J_prior, mu_prior), axis=-1)
         ExJmuT = np.sum(Ex * h_prior[:,:,None,None,:], axis=-1)
         ElogdetJ = 2*niw_stats[3]
-        assert(ExJxT.shape == (2,2,T,K))
-        assert(EmuJmuT.shape == (2,2))
-        assert(ExJmuT.shape == (2,2,T,K))
 
         logodds = z_prior[i] \
             + .5 * (1-z_stats[:,j]) * (ElogdetJ[1,0] - ExJxT[1,0,:,i] - EmuJmuT[1,0] + 2*ExJmuT[1,0,:,i]) \
@@ -74,7 +54,7 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
             + .5 * z_stats[:,h]     * (ElogdetJ[1,1] - ExJxT[1,1,:,h] - EmuJmuT[1,1] + 2*ExJmuT[1,1,:,h]) \
             - .5 * (1-z_stats[:,h]) * (ElogdetJ[0,0] - ExJxT[0,0,:,h] - EmuJmuT[0,0] + 2*ExJmuT[0,0,:,h]) \
             - .5 * z_stats[:,h]     * (ElogdetJ[1,0] - ExJxT[1,0,:,h] - EmuJmuT[1,0] + 2*ExJmuT[1,0,:,h])
-        return logodds, bernoulli.natural_to_mean(logodds)
+        return logodds, bernoulli.expectedstats(logodds)
 
     def update_gaussian(i):
         z_pairstats = _z_pairstats(z_stats)
@@ -83,23 +63,11 @@ def _local_mf_update(global_stats, encoder_potentials, local_natparams, local_st
 
     for i in range(K - 1, -1, -1):
         z_natparams_i, z_stats_i = update_discrete(i)
-        z_natparams = replace(z_natparams, z_natparams_i, i)
+        z_natparams = replace(z_natparams, z_natparams_i, i, axis=1)
         z_stats = replace(z_stats, z_stats_i, i)
         x_natparams_i, x_stats_i = update_gaussian(i)
-        x_natparams = replace(x_natparams, x_natparams_i, i, 1)
+        x_natparams = replace(x_natparams, x_natparams_i, i, axis=1)
         x_stats = replace(x_stats, x_stats_i, i, 1)
-
-    # zkl = _z_kl(z_natparams, z_prior, z_stats)
-    # xkl = _x_kl(x_natparams, J_prior, mu_prior, x_stats, z_stats)
-    # print('x: {}, z: {}, sum: {}'.format(getval(xkl), getval(zkl), getval(xkl+zkl)))
-    # print('z_stats: \n{}'.format(getval(z_stats[0])))
-    # print('x_stats: \n{}'.format(getval(x_stats[0][0])))
-    # print('x_stats: \n{}'.format(getval(x_stats[1][0])))
-    # print('z_nats: \n{}'.format(getval(z_natparams[0])))
-    # print('x_nats[0: \n{}'.format(getval(x_natparams[0][0])))
-    # print('x_nats[1]: \n{}'.format(getval(x_natparams[1][0])))
-    # assert(zkl > 0)
-    # assert(xkl > 0)
 
     return (z_natparams, x_natparams), (z_stats, x_stats)
 
@@ -155,29 +123,12 @@ def _local_ep_update(global_stats, encoder_potentials, local_messages):
             g_i_right - np.roll(z_prior, -1, axis=0)
 
     z_natparams = g_i + np.roll(g_j, 1, axis=1) + z_prior
-    z_stats = bernoulli.natural_to_mean(z_natparams)
+    z_stats = bernoulli.expectedstats(z_natparams)
 
     x_stats = gen_x_stats()
     x_natparams = gaussian.mean_to_natural(x_stats)
 
-    # assert(np.all(getval(z_stats) > 0))
-    # assert(np.all(getval(z_stats) < 1))
-
-
-    # zkl = _z_kl(z_natparams, z_prior, z_stats)
-    # xkl = _x_kl(x_natparams, J_prior, mu_prior, x_stats, z_stats)
-    # assert(zkl > 0)
-    # assert(xkl > 0)
-    # print('x: {}, z: {}, sum: {}'.format(getval(xkl), getval(zkl), getval(xkl+zkl)))
-    # print('z_stats: \n{}'.format(getval(z_stats[0])))
-    # print('x_stats: \n{}'.format(getval(x_stats[0][0])))
-    # print('x_stats: \n{}'.format(getval(x_stats[1][0])))
-    # print('z_nats: \n{}'.format(getval(z_natparams[0])))
-    # print('x_nats[0: \n{}'.format(getval(x_natparams[0][0])))
-    # print('x_nats[1]: \n{}'.format(getval(x_natparams[1][0])))
-    # print('z_stats {} {}'.format(np.mean(z_stats), np.mean(np.abs(z_stats))))
-    # print('z: {}, x: {}'.format(zkl, xkl))
-    return (z_natparams, x_natparams), (z_stats, x_stats), (g_i, g_j) #, zkl + xkl
+    return (z_natparams, x_natparams), (z_stats, x_stats), (g_i, g_j)
 
 def _local_kl(global_stats, local_natparams, local_stats):
     z_natparams, x_natparams = local_natparams
@@ -185,7 +136,7 @@ def _local_kl(global_stats, local_natparams, local_stats):
 
     z_kl = _z_kl(global_stats[0], z_natparams, z_stats)
     x_kl = _x_kl(global_stats[1], x_natparams, x_stats, z_stats)
-    # print('z: {}, x: {}'.format(getval(z_kl), getval(x_kl)))
+
     return z_kl + x_kl
 
 def _global_logZ(global_natparams):
@@ -193,19 +144,17 @@ def _global_logZ(global_natparams):
     return beta.logZ(*beta_natparams) + niw.logZ(niw_natparams)
 
 def _global_kl(global_prior_natparams, global_natparams):
-    stats = flat((beta.natural_to_mean(*global_natparams[0]), niw.expectedstats(global_natparams[1])))
+    stats = flat((beta.expectedstats(*global_natparams[0]), niw.expectedstats(global_natparams[1])))
     natparam_difference = flat(global_natparams) - flat(global_prior_natparams)
     logZ_difference = _global_logZ(global_natparams) - _global_logZ(global_prior_natparams)
     return np.dot(natparam_difference, stats) - np.sum(logZ_difference)
 
-foo1 = npr.randn(1000, 10)
-foo2 = npr.randn(1000, 10,10)
 def _local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
     T, K, N = encoder_potentials[0].shape
 
     def make_fpfun((global_stats, encoder_potentials)):
         return lambda x: \
-            _local_mf_update(global_prior_natparams, global_natparams, global_stats, encoder_potentials, *x)
+            _local_mf_update(global_stats, encoder_potentials, *x)
 
     def diff(x, x_prev):
         return np.sum(np.abs(x_prev[0][0] - x[0][0])) \
@@ -213,9 +162,9 @@ def _local_inference_mf(global_prior_natparams, global_natparams, global_stats, 
             + np.sum(np.abs(x_prev[0][1][1] - x[0][1][1]))
 
     def init_x0():
-        z_natparams = foo1[:T, :K]
-        x_natparams = gaussian.pack_dense(-np.tile(np.eye(N), (T, K, 1, 1)), foo2[:T,:K,:N]) #np.zeros((T, K, N)))
-        z_stats = bernoulli.natural_to_mean(z_natparams)
+        z_natparams = npr.randn(T,K)
+        x_natparams = gaussian.pack_dense(-np.tile(np.eye(N), (T, K, 1, 1)), npr.randn(T,K,N))
+        z_stats = bernoulli.expectedstats(z_natparams)
         x_stats = gaussian.expectedstats(x_natparams)
         return (z_natparams, x_natparams), (z_stats, x_stats)
 
@@ -235,16 +184,6 @@ def local_inference_mf(global_prior_natparams, global_natparams, global_stats, e
     local_samples, _, local_stats, global_kl, local_kl = \
         _local_inference_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples)
     return local_samples, local_stats, global_kl, local_kl
-
-def local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
-    local_samples, _, local_stats, global_kl, local_kl = \
-        _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples)
-    return local_samples, local_stats, global_kl, local_kl
-
-def local_natparams_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials):
-    _, local_natparams, _, _, _ = \
-        _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, 0)
-    return local_natparams
 
 def local_natparams_mf(global_prior_natparams, global_natparams, global_stats, encoder_potentials):
     _, local_natparams, _, _, _ = \
@@ -266,7 +205,7 @@ def _local_inference_ep(global_prior_natparams, global_natparams, global_stats, 
     def init_x0():
         z_natparams = npr.randn(T, K)
         x_natparams = gaussian.pack_dense(-np.tile(np.eye(N), (T, K, 1, 1)), npr.randn(T, K, N))
-        local_stats = bernoulli.natural_to_mean(z_natparams), gaussian.expectedstats(x_natparams)
+        local_stats = bernoulli.expectedstats(z_natparams), gaussian.expectedstats(x_natparams)
         local_messages = npr.randn(T,K), npr.randn(T,K)
         return (z_natparams, x_natparams), local_stats, local_messages
 
@@ -281,7 +220,17 @@ def _local_inference_ep(global_prior_natparams, global_natparams, global_stats, 
     global_kl = _global_kl(global_prior_natparams, global_natparams)
     return local_samples, local_natparams, unbox((beta_stats, niw_stats)), global_kl, local_kl
 
-def init_global_natparams(K, N, alpha, niw_conc=10., random_scale=0.):
+def local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
+    local_samples, _, local_stats, global_kl, local_kl = \
+        _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples)
+    return local_samples, local_stats, global_kl, local_kl
+
+def local_natparams_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials):
+    _, local_natparams, _, _, _ = \
+        _local_inference_ep(global_prior_natparams, global_natparams, global_stats, encoder_potentials, 0)
+    return local_natparams
+
+def init_pgm_natparams(K, N, alpha, niw_conc=10., random_scale=0.):
     def init_niw_natparam():
         nu, kappa = np.ones((2,2))*(N+niw_conc), np.ones((2,2))*niw_conc
         # m = np.zeros((2,2,N))
@@ -296,4 +245,4 @@ def init_global_natparams(K, N, alpha, niw_conc=10., random_scale=0.):
     return (beta_natparam[:,0], beta_natparam[:,1]), niw_natparam
 
 def pgm_expectedstats(natparams):
-    return beta.natural_to_mean(*natparams[0]), niw.expectedstats(natparams[1])
+    return beta.expectedstats(*natparams[0]), niw.expectedstats(natparams[1])
