@@ -26,7 +26,7 @@ def _make_ravelers(input_shape):
 
 layer = curry(lambda nonlin, W, b, inputs: nonlin(np.matmul(inputs, W) + b))
 init_layer_random = curry(lambda d_in, d_out, scale:
-                          (scale*npr.randn(d_in, d_out), scale*npr.randn(d_out)))
+                          (scale*npr.randn(d_in, d_out), np.zeros(d_out)))
 init_layer_partial_isometry = lambda d_in, d_out: \
     (rand_partial_isometry(d_in, d_out), npr.randn(d_out))
 
