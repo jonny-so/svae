@@ -46,7 +46,7 @@ if __name__ == "__main__":
     data = make_pinwheel_data(0.3, 0.05, num_clusters, samples_per_cluster, 0.25)
 
     # set prior natparam to something sparsifying but otherwise generic
-    pgm_prior_params = init_pgm_param(K, N, alpha=0.01/K, niw_conc=0.5)
+    pgm_prior_params = init_pgm_param(K, N, alpha=0.005/K, niw_conc=0.5)
 
     # construct recognition and decoder networks and initialize them
     loglike = make_loglike(decode)
@@ -54,6 +54,7 @@ if __name__ == "__main__":
     # initialize gmm parameters
     pgm_params = init_pgm_param(K, N, alpha=1., niw_conc=1., random_scale=3.)
     params = pgm_params, loglike_params, recogn_params
+    # params = pickle.load(open('gmm_svae_synth_params.pkl', 'rb'))
 
     # set up encoder/decoder and plotting
     plot = make_plotter_2d(recognize, decode, data, num_clusters, params, plot_every=100)
@@ -64,5 +65,4 @@ if __name__ == "__main__":
     # optimize
     params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
                  params, num_iters=1000, step_size=1e-3)
-
     pickle.dump(params, open('gmm_svae_synth_params.pkl', 'wb'))
