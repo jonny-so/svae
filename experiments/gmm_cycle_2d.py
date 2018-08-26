@@ -117,6 +117,9 @@ def plot_or_update(idx, ax, x, y, alpha=1, **kwargs):
         ax.plot(x, y, alpha=alpha, **kwargs)
 
 def plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes):
+
+    K = y.shape[1]
+
     for i, ax in zip(xrange(len(axes)), axes):
         plot_or_update(0, ax, y[:,i,0], y[:,i,1], color='k', marker='.', linestyle='', markersize=1)
         plot_or_update(1, ax, y_hat[:,i,0], y_hat[:,i,1], color='r', marker='.', linestyle='', markersize=4)
@@ -131,6 +134,7 @@ def plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes):
 
 def plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes):
 
+    K = x_enc.shape[1]
     x_enc_mu = np.sum(x_enc*x_encW[...,None], axis=-2)
 
     for i, ax in zip(xrange(len(axes)), axes):
@@ -145,6 +149,8 @@ def plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes):
             plot_or_update(c+2, ax, latent_ellipse[:, 0], latent_ellipse[:, 1], alpha=w, linestyle='-', linewidth=1)
 
 def plot_data_density(decoder, gamma, pi, mu, V, y, axes):
+
+    K = y.shape[1]
     xlim, ylim = (-2,2), (-2,2)
 
     for i, ax in zip(xrange(len(axes)), axes):
@@ -163,7 +169,7 @@ def plot_data_density(decoder, gamma, pi, mu, V, y, axes):
             density = decode_density(samples, gamma, decoder, w)
             plot_transparent_hexbin(ax, density, xlim, ylim, 75, colors[c % len(colors)])
 
-def plot_encoder_potential(encoder, phi, decoder, gamma, t, i, ax):
+def plot_encoder_potential(encoder, phi, decoder, gamma, y, t, i, ax):
     ax.clear()
     xlim, ylim = (-2,2), (-2,2)
     ax.set_ylim(*xlim)
@@ -182,10 +188,10 @@ def plot_encoder_potential(encoder, phi, decoder, gamma, t, i, ax):
     for k in xrange(x_encW.shape[-1]):
         ellipse = create_ellipse(x_enc[t,i,k], x_encV[t,i,k])
         weight = x_encW[t,i,k]/np.max(x_encW[t,i])
-        plot_or_update(k*2+1, ax, x_enc[t,i,k,0], x_enc[t,i,k,1], linestyle='', marker='.', markersize=2, color='b', alpha=weight)
+        plot_or_update(k*2+1, ax, x_enc[t,i,k,0], x_enc[t,i,k,1], linestyle='', marker='o', color='b', alpha=weight)
         plot_or_update(k*2+2, ax, ellipse[:,0], ellipse[:,1], linestyle='-', linewidth=1, color='b', alpha=weight)
 
-def make_plotter(encoder, decoder, global_prior_natparams, y, plot_every=10):
+def make_plotter(encoder, decoder, global_prior_natparams, y, plot_every=500):
     T, K, _ = y.shape
     figure, axes = plt.subplots(3, K, figsize=(2*K,6))
 
@@ -228,15 +234,13 @@ def make_plotter(encoder, decoder, global_prior_natparams, y, plot_every=10):
 
             plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes[0])
             plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes[1])
-
-            if iter % 100 == 0:
-                plot_data_density(decoder, gamma, pi, mu, V, y, axes[2])
+            plot_data_density(decoder, gamma, pi, mu, V, y, axes[2])
 
             plt.pause(0.1)
 
     return plot
 
-def save_figures(fileprefix, params, encoder, decoder, y, scale=4):
+def save_figures(fileprefix, global_prior_natparams, params, encoder, decoder, y, scale=4):
 
     def save_figure(fig, filename):
         fig.savefig(filename + '.png', dpi=300, bbox_inches='tight', pad_inches=0)
@@ -251,6 +255,7 @@ def save_figures(fileprefix, params, encoder, decoder, y, scale=4):
             ax[k].autoscale(False)
         return fig, ax
 
+    K = y.shape[1]
     fig_density, axes_density = make_figure(K, (-2,2), (-2,2))
     fig_latent, axes_latent = make_figure(K, (-3,3), (-3,3))
     fig_data, axes_data = make_figure(K, (-2,2), (-2,2))
@@ -279,14 +284,14 @@ def save_figures(fileprefix, params, encoder, decoder, y, scale=4):
     plot_data_space(decoder, gamma, pi, mu, V, y, y_hat, axes_data)
     plot_latent_space(pi, mu, V, x_enc, x_encW, x_hat, axes_latent)
 
-    save_figure(fig_density, 'figures/' + fileprefix + '_density')
-    save_figure(fig_data, 'figures/' + fileprefix + '_data')
-    save_figure(fig_latent, 'figures/' + fileprefix + '_latent')
+    save_figure(fig_density, fileprefix + '_density')
+    save_figure(fig_data, fileprefix + '_data')
+    save_figure(fig_latent, fileprefix + '_latent')
 
     for t in xrange(5):
         fig_enc, axis_enc = plt.subplots(1, 1, figsize=(scale, scale))
-        plot_encoder_potential(encoder, phi, decoder, gamma, t, 0, axis_enc)
-        save_figure(fig_enc, 'figures/' + fileprefix + '_encoder' + str(t))
+        plot_encoder_potential(encoder, phi, decoder, gamma, y, t, 0, axis_enc)
+        save_figure(fig_enc, fileprefix + '_encoder' + str(t))
 
     plt.close('all')
 
@@ -302,36 +307,50 @@ def init_pgm_natparams(K, N, alpha, niw_conc=10., random_scale=0.):
 
     return (beta_natparam[:,0], beta_natparam[:,1]), niw_natparam
 
-if __name__ == "__main__":
+def run_experiment(seed, max_iter, mog_classes):
     N = P = 2
     K = 3
-    C = 2
     T = 800
+
+    # use constant data set
     npr.seed(0)
     _, _, _, y, _ = create_gmm_cycle_2d_data(20, 20, K, T)
 
-    # construct recognition and decoder networks and initialize them
-    encoder, phi = \
-        init_gresnet_mix(P, N, 1, [(40, np.tanh) for _ in xrange(7)])
-    decoder, gamma = \
-        init_gresnet(N, [(40, np.tanh) for _ in xrange(3)] + [(2*P, gaussian_mean)])
-    loglike = make_loglike(decoder)
+    # reseed for parameter initialisation
+    npr.seed(seed)
 
     # global prior and variational posterior natparams
     global_prior_natparams = init_pgm_natparams(K, N, alpha=0.5/K, niw_conc=100.)
     global_natparams = init_pgm_natparams(K, N, alpha=1., niw_conc=0.5, random_scale=1.0)
 
+    # construct recognition and decoder networks and initialize them
+    encoder, phi = \
+        init_gresnet_mix(P, N, mog_classes, [(40, np.tanh) for _ in xrange(7)])
+    decoder, gamma = \
+        init_gresnet(N, [(40, np.tanh) for _ in xrange(3)] + [(2*P, gaussian_mean)])
+    loglike = make_loglike(decoder)
+
     params = global_natparams, gamma, phi
     # params = pickle.load(open('params.pkl'))
 
     plot = make_plotter(encoder, decoder, global_prior_natparams, y)
+    elbos = np.zeros(max_iter)
+
+    def callback(i, val, params, grad):
+        plot(i, val, params, grad)
+        elbos[i] = val
 
     gradfun = make_gradfun(
         local_inference_ep, encoder, loglike, global_prior_natparams, pgm_expectedstats, y)
 
-    params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=plot),
-                  params, num_iters=1000, step_size=1e-3)
+    params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=callback),
+                  params, num_iters=max_iter, step_size=1e-3)
 
-    prefix = 'gmm_cycle_10k_m1'
+    prefix = './gmm_cycle/gmm_cycle_' + str(max_iter//1000) + 'k_m' + str(mog_classes) + '_s' + str(seed)
     pickle.dump(params, open(prefix + '.pkl', 'wb'))
-    save_figures(prefix, params, encoder, decoder, y)
+    save_figures(prefix, global_prior_natparams, params, encoder, decoder, y)
+    np.savetxt(prefix + '_elbo.txt', elbos)
+
+if __name__ == "__main__":
+    run_experiment(0, 10000, 1)
+    run_experiment(0, 10000, 2)
