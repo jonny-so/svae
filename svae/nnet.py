@@ -26,13 +26,12 @@ def _make_ravelers(input_shape):
 
 layer = curry(lambda nonlin, W, b, inputs: nonlin(np.matmul(inputs, W) + b))
 init_layer_random = curry(lambda d_in, d_out, scale:
-                          (scale*npr.randn(d_in, d_out), np.zeros(d_out)))
+                          (scale*npr.randn(d_in, d_out), scale*npr.randn(d_out)))
+init_layer_glorot = lambda d_in, d_out: \
+    (np.sqrt(2./(d_in + d_out))*npr.randn(d_in, d_out), np.zeros(d_out))
 init_layer_partial_isometry = lambda d_in, d_out: \
     (rand_partial_isometry(d_in, d_out), npr.randn(d_out))
-
-def init_layer(d_in, d_out, fn=None):
-    fn = init_layer_random(scale=np.sqrt(2./(d_in + d_out))) if fn is None else fn
-    return fn(d_in, d_out)
+init_layer = lambda d_in, d_out, fn=init_layer_random(scale=1e-2): fn(d_in, d_out)
 
 ### special output layers to produce Gaussian parameters
 
@@ -110,29 +109,29 @@ def _gresnet(mlp_type, mlp, params, inputs):
     if mlp_type == 'mean':
         mu_mlp, sigmasq_mlp = mlp(mlp_params, inputs)
         mu_res = unravel(np.dot(ravel(inputs), W) + b1)
-        sigmasq_res = log1pexp(b2)
         return tuple_((mu_mlp + mu_res, sigmasq_mlp))
     elif mlp_type == 'info':
         J_mlp, h_mlp = mlp(mlp_params, inputs)
         J_res = -1./2 * log1pexp(b2)
         h_res = unravel(np.dot(ravel(inputs), W) + b1)
-        return tuple_((J_mlp, h_mlp + h_res))
+        return tuple_((J_mlp + J_res, h_mlp + h_res))
     elif mlp_type == 'info_mix':
         d_out = b1.shape[-1]
         J_mlp, h_mlp, p_mlp = mlp(mlp_params, inputs)
         J_mlp = np.reshape(J_mlp, J_mlp.shape[:-1] + (-1,d_out))
+        J_res = -1./2 * log1pexp(b2)
         h_mlp = np.reshape(h_mlp, h_mlp.shape[:-1] + (-1,d_out))
         h_res = unravel(np.dot(ravel(inputs), W) + b1)
-        return tuple_((J_mlp, h_mlp + h_res[...,None,:], p_mlp))
+        return tuple_((J_mlp + J_res, h_mlp + h_res[...,None,:], p_mlp))
 
-def init_gresnet(d_in, layer_specs):
+def init_gresnet(d_in, layer_specs, res_init=rand_partial_isometry):
     d_out = layer_specs[-1][0] // 2
-    res_params = identity_isometry(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
+    res_params = res_init(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
     mlp, mlp_params = init_mlp(d_in, layer_specs)
     return _gresnet(gaussian_mlp_type(layer_specs), mlp), (mlp_params, res_params)
 
-def init_gresnet_mix(d_in, d_out, classes, layer_specs):
+def init_gresnet_mix(d_in, d_out, classes, layer_specs, res_init=rand_partial_isometry):
     layer_specs = layer_specs + [((2*d_out + 1)*classes, gaussian_info_mix(classes))]
-    res_params = identity_isometry(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
+    res_params = res_init(d_in, d_out), np.zeros(d_out), np.zeros(d_out)
     mlp, mlp_params = init_mlp(d_in, layer_specs)
     return _gresnet(gaussian_mlp_type(layer_specs), mlp), (mlp_params, res_params)

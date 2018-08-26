@@ -6,7 +6,7 @@ import scipy.stats
 import pickle
 from matplotlib.colors import LinearSegmentedColormap
 
-from svae.nnet import init_gresnet, init_gresnet_mix, gaussian_mean, make_loglike
+from svae.nnet import identity_isometry, init_layer_glorot, init_gresnet, init_gresnet_mix, gaussian_mean, make_loglike
 from svae.distributions import gaussian, niw
 from svae.models.gmm_cycle import local_inference_ep, local_natparams_ep, pgm_expectedstats
 from svae.optimizers import adam
@@ -325,9 +325,9 @@ def run_experiment(seed, max_iter, mog_classes):
 
     # construct recognition and decoder networks and initialize them
     encoder, phi = \
-        init_gresnet_mix(P, N, mog_classes, [(40, np.tanh) for _ in xrange(7)])
+        init_gresnet_mix(P, N, mog_classes, [(40, np.tanh, init_layer_glorot) for _ in xrange(7)], identity_isometry)
     decoder, gamma = \
-        init_gresnet(N, [(40, np.tanh) for _ in xrange(3)] + [(2*P, gaussian_mean)])
+        init_gresnet(N, [(40, np.tanh, init_layer_glorot) for _ in xrange(3)] + [(2*P, gaussian_mean)], identity_isometry)
     loglike = make_loglike(decoder)
 
     params = global_natparams, gamma, phi
