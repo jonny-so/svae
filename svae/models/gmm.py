@@ -20,10 +20,10 @@ def run_inference_ep(prior_natparam, global_natparam, global_stats, nn_potential
 def run_inference_mf(prior_natparam, global_natparam, global_stats, nn_potentials, num_samples):
     return run_inference(prior_natparam, global_natparam, global_stats, nn_potentials, local_meanfield, num_samples)
 
-def make_encoder_decoder(recognize, decode):
+def make_encoder_decoder(local_inference, recognize, decode):
     def encode_mean(data, natparam, recogn_params):
         nn_potentials = recognize(recogn_params, data)
-        (_, gaussian_stats), _, _, _ = local_meanfield(pgm_expectedstats(natparam), nn_potentials)
+        (_, gaussian_stats), _, _, _ = local_inference(pgm_expectedstats(natparam), nn_potentials)
         _, Ex, _, _ = gaussian.unpack_dense(gaussian_stats)
         return Ex
 
@@ -215,12 +215,12 @@ def initialize_meanfield(label_global, gaussian_globals, node_potentials):
 
 ### plotting util for 2D
 
-def make_plotter_2d(recognize, decode, data, num_clusters, params, plot_every):
+def make_plotter_2d(local_inference, recognize, decode, data, num_clusters, params, plot_every):
     import matplotlib.pyplot as plt
     if data.shape[1] != 2: raise ValueError, 'make_plotter_2d only works with 2D data'
 
     fig, (observation_axis, latent_axis) = plt.subplots(1, 2, figsize=(8,4))
-    encode_mean, decode_mean = make_encoder_decoder(recognize, decode)
+    encode_mean, decode_mean = make_encoder_decoder(local_inference, recognize, decode)
 
     observation_axis.plot(data[:,0], data[:,1], color='k', marker='.', linestyle='')
     observation_axis.set_aspect('equal')
