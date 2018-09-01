@@ -155,8 +155,8 @@ def plot_data_density(decoder, gamma, pi, mu, V, y, axes):
 
     for i, ax in zip(xrange(len(axes)), axes):
         ax.clear()
-        ax.set_ylim(*xlim)
-        ax.set_xlim(*ylim)
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
         ax.set_aspect('equal')
         ax.autoscale(False)
         plot_or_update(0, ax, y[:,i,0], y[:,i,1], color='k', marker='.', linestyle='', markersize=1)
@@ -169,11 +169,11 @@ def plot_data_density(decoder, gamma, pi, mu, V, y, axes):
             density = decode_density(samples, gamma, decoder, w)
             plot_transparent_hexbin(ax, density, xlim, ylim, 75, colors[c % len(colors)])
 
-def plot_encoder_potential(encoder, phi, decoder, gamma, y, t, i, ax):
+def plot_encoder_potential(encoder, phi, decoder, gamma, pi, mu, V, y, t, i, ax):
     ax.clear()
     xlim, ylim = (-2,2), (-2,2)
-    ax.set_ylim(*xlim)
-    ax.set_xlim(*ylim)
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
     ax.set_aspect('equal')
     ax.autoscale(False)
 
@@ -182,14 +182,24 @@ def plot_encoder_potential(encoder, phi, decoder, gamma, y, t, i, ax):
         gaussian.pack_dense(encoder_out[0], encoder_out[1]))
     x_encW = encoder_out[2]
 
+    K = x_enc.shape[1]
+    x_enc_mu = np.sum(x_enc*x_encW[...,None], axis=-2)
+
     density = reverse_density(y[t,i], gamma, decoder, 1.)
     plot_transparent_hexbin(ax, density, xlim, ylim, 75, np.array([1.,0,0]), scale=True)
+
+    j = (i + 1) % K
+    weights = (1 - pi[i]) * (1 - pi[j]), pi[i] * (1 - pi[j]), (1 - pi[i]) * pi[j], pi[i] * pi[j]
+    weights = weights / np.max(weights)
+    for (c, m, v, w) in zip(range(4), mu, V, weights):
+        latent_ellipse = create_ellipse(m, v)
+        plot_or_update(c, ax, latent_ellipse[:, 0], latent_ellipse[:, 1], alpha=w, linestyle='-', color='g', linewidth=1)
 
     for k in xrange(x_encW.shape[-1]):
         ellipse = create_ellipse(x_enc[t,i,k], x_encV[t,i,k])
         weight = x_encW[t,i,k]/np.max(x_encW[t,i])
-        plot_or_update(k*2+1, ax, x_enc[t,i,k,0], x_enc[t,i,k,1], linestyle='', marker='o', color='b', alpha=weight)
-        plot_or_update(k*2+2, ax, ellipse[:,0], ellipse[:,1], linestyle='-', linewidth=1, color='b', alpha=weight)
+        plot_or_update(k*2+1+4, ax, x_enc[t,i,k,0], x_enc[t,i,k,1], linestyle='', marker='o', color='b', alpha=weight)
+        plot_or_update(k*2+2+4, ax, ellipse[:,0], ellipse[:,1], linestyle='-', linewidth=1, color='b', alpha=weight)
 
 def make_plotter(encoder, decoder, global_prior_natparams, y, plot_every=500):
     T, K, _ = y.shape
@@ -197,13 +207,13 @@ def make_plotter(encoder, decoder, global_prior_natparams, y, plot_every=500):
 
     for i in range(K):
         # data space
-        axes[0, i].set_ylim(-2,2)
         axes[0, i].set_xlim(-2,2)
+        axes[0, i].set_ylim(-2,2)
         axes[0, i].set_aspect('equal')
         axes[0, i].autoscale(False)
         # latent space
-        axes[1, i].set_ylim(-2,2)
         axes[1, i].set_xlim(-2,2)
+        axes[1, i].set_ylim(-2,2)
         axes[1, i].set_aspect('equal')
         axes[1, i].autoscale(False)
 
@@ -290,7 +300,7 @@ def save_figures(fileprefix, global_prior_natparams, params, encoder, decoder, y
 
     for t in xrange(5):
         fig_enc, axis_enc = plt.subplots(1, 1, figsize=(scale, scale))
-        plot_encoder_potential(encoder, phi, decoder, gamma, y, t, 0, axis_enc)
+        plot_encoder_potential(encoder, phi, decoder, gamma, pi, mu, V, y, t, 0, axis_enc)
         save_figure(fig_enc, fileprefix + '_encoder' + str(t))
 
     plt.close('all')
@@ -352,5 +362,5 @@ def run_experiment(seed, max_iter, mog_classes):
     np.savetxt(prefix + '_elbo.txt', elbos)
 
 if __name__ == "__main__":
-    run_experiment(0, 10000, 1)
-    run_experiment(0, 10000, 2)
+    run_experiment(0, 50000, 1)
+    run_experiment(0, 50000, 2)
