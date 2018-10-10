@@ -3,7 +3,7 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd.misc.fixed_points import fixed_point
 from svae.distributions import gamma, gaussian, univariate_gaussian
-from svae.util import expand_diagonal, flat, log1pexp, replace, softmax, mvp, unbox
+from svae.util import expand_diagonal, flat, replace, softmax, mvp, unbox, sigmoid
 
 def _local_samples(global_stats, local_messages, num_samples):
     fwd_messages, bwd_messages, obs_messages = local_messages
@@ -13,48 +13,64 @@ def _local_samples(global_stats, local_messages, num_samples):
     for t in xrange(1, T):
         in_message = univariate_gaussian.standard_to_natural(np.ones((num_samples,N))/global_stats[1], samples[-1])
         samples.append(np.squeeze(
-            univariate_gaussian.natural_sample(in_message + bwd_messages[:, 0] + obs_messages[:, 0], 1), 0))
+            univariate_gaussian.natural_sample(in_message + bwd_messages[:, t] + obs_messages[:, t], 1), 0))
     return np.stack(samples, axis=-1)[...,None]
 
+def _dense_local_samples(global_stats, local_messages, num_samples):
+    return np.swapaxes(
+        gaussian.natural_sample(
+            _dense_local_natparams(global_stats, local_messages), num_samples), 0, 1)[...,None]
+
 def _global_kl(global_prior_natparams, global_natparams):
-    stats = flat(gamma.expectedstats(global_natparams))
-    natparam_difference = flat(global_natparams) - flat(global_prior_natparams)
+    stats = gamma.expectedstats(global_natparams)
+    natparam_difference = global_natparams - global_prior_natparams
     return np.dot(natparam_difference, stats) - (gamma.logZ(global_natparams) - gamma.logZ(global_prior_natparams))
 
-def _posterior_local_logZ(global_stats, local_messages):
+def _local_logZ(global_stats, local_messages):
     fwd_messages, _, obs_messages = local_messages
     N, T = fwd_messages.shape[:2]
-    tau = np.pad(np.repeat(global_stats[0], T-1), (0,1), 'constant')
+    tau = np.pad(np.repeat(global_stats[1], T-1), (0,1), 'constant')
     res = np.zeros(N)
     v, m = univariate_gaussian.natural_to_standard(fwd_messages + obs_messages)
+    j = 1./v
     for t in range(T):
-        res += .5*np.log(2*np.pi)
-        res -= .5*np.log(tau[t] + 1./v[:,t])
-        res += .5*np.power(m[:,t], 2) * (v[:,t] + np.power(v[:,t], 2)*tau[t])
-    return res
+        res -= .5*np.log(tau[t] + j[:,t])
+        res += .5*np.power(m[:,t], 2) * j[:,t] / (1 + v[:,t]*tau[t])
+    return np.sum(res)
 
-def _foo_local_logZ(global_stats, local_messages):
+def _dense_local_logZ(global_stats, local_messages):
+    return gaussian.logZ(_dense_local_natparams(global_stats, local_messages))
+
+def _dense_local_natparams(global_stats, local_messages):
     fwd_messages, bwd_messages, obs_messages = local_messages
     N, T = fwd_messages.shape[:2]
     neghalfj = univariate_gaussian.unpack_dense(obs_messages)[0] - global_stats[1] \
-               + np.pad(.5*global_stats[1]*np.ones((N,1)), ((0,0),(T-1,0)), 'constant')
+        + np.pad(.5*global_stats[1]*np.ones((N,1)), ((0,0),(T-1,0)), 'constant')
     m = univariate_gaussian.natural_to_standard(fwd_messages + bwd_messages + obs_messages)[1]
     A = expand_diagonal(neghalfj) \
-        -.5*np.tile(np.diag(global_stats[1]*np.ones(T-1), 1), (N,1,1)) +\
-        -.5*np.tile(np.diag(global_stats[1]*np.ones(T-1), -1), (N,1,1))
+        +.5*np.tile(np.diag(global_stats[1]*np.ones(T-1), 1), (N,1,1)) \
+        +.5*np.tile(np.diag(global_stats[1]*np.ones(T-1), -1), (N,1,1))
     b = mvp(-2*A, m)
-    return gaussian.logZ(gaussian.pack_dense(A, b))
+    return gaussian.pack_dense(A, b)
 
 # correct up to a constant, but this means KL is not necessarily >= 0
 def _prior_local_logZ(global_stats, N, T):
     return -N*T*.5*global_stats[0]
 
+def _dense_prior_local_logZ(global_stats, N, T):
+    neghalfj = np.pad(.5*global_stats[1]*np.ones((N,1)), ((0,0),(T-1,0)), 'constant') - global_stats[1]
+    A = expand_diagonal(neghalfj) \
+        +.5*np.tile(np.diag(global_stats[1]*np.ones(T-1), 1), (N,1,1)) \
+        +.5*np.tile(np.diag(global_stats[1]*np.ones(T-1), -1), (N,1,1))
+    b = np.zeros((N,T))
+    return gaussian.logZ(gaussian.pack_dense(A, b))
+
 def _local_kl(global_stats, local_messages, local_stats):
     _, _, obs_messages = local_messages
     singleton_stats, _ = local_stats
-    print('{} {}'.format(_posterior_local_logZ(global_stats, local_messages), _foo_local_logZ(global_stats, local_messages)))
+    # print('{} {}'.format(_local_logZ(global_stats, local_messages), _dense_local_logZ(global_stats, local_messages)))
     return np.tensordot(obs_messages, singleton_stats, 3) - (
-        _posterior_local_logZ(global_stats, local_messages) - _prior_local_logZ(global_stats, *obs_messages.shape[:2]))
+        _dense_local_logZ(global_stats, local_messages) - _dense_prior_local_logZ(global_stats, *obs_messages.shape[:2]))
 
 def _local_stats(global_stats, local_messages):
     fwd_messages, bwd_messages, obs_messages = local_messages
@@ -64,30 +80,25 @@ def _local_stats(global_stats, local_messages):
     pairwise_natparams = gaussian.pack_dense(
         np.stack((
             fwd_messages[:,:-1,0] + obs_messages[:,:-1,0] - .5*tau,
-            np.tile(tau, (N,T-1)),
-            np.tile(tau, (N,T-1)),
+            .5*np.tile(tau, (N,T-1)),
+            .5*np.tile(tau, (N,T-1)),
             bwd_messages[:,1:,0] + obs_messages[:,1:,0] - .5*tau), axis=-1).reshape(N,T-1,2,2),
         np.stack((
             fwd_messages[:, :-1, 1] + obs_messages[:, :-1, 1],
-            bwd_messages[:, 1:, 1] + obs_messages[:, 1:, 1])).reshape(N,T-1,2))
-    assert(np.allclose(singleton_stats[:,0,0],
-        gaussian.unpack_dense(gaussian.expectedstats(pairwise_natparams))[0][...,0,0,0]))
+            bwd_messages[:, 1:, 1] + obs_messages[:, 1:, 1]), axis=-1).reshape(N,T-1,2))
     pairwise_stats = gaussian.unpack_dense(gaussian.expectedstats(pairwise_natparams))[0][...,0,1]
     return singleton_stats, pairwise_stats
 
 def _local_ep_update(global_stats, encoder_potentials, (fwd_messages, bwd_messages, obs_messages)):
-    print('update')
+
     N, T, C = encoder_potentials[0].shape
     encoder_natparams = univariate_gaussian.pack_dense(*encoder_potentials[:2]) # (N,T,C,2)
     encoder_logits = encoder_potentials[2] # (N,T,C)
-    assert(fwd_messages.shape == (N,T,2))
-    assert(bwd_messages.shape == (N,T,2))
-    assert(obs_messages.shape == (N,T,2))
 
     def propagate(in_messages, t):
         cavity_natparams = fwd_messages[:,t] + bwd_messages[:,t] # (N,2)
         r = softmax(encoder_logits[:,t] +
-            univariate_gaussian.logZ(encoder_natparams[:,t] + cavity_natparams) -
+            univariate_gaussian.logZ(encoder_natparams[:,t] + cavity_natparams[:,None]) -
             univariate_gaussian.logZ(encoder_natparams[:,t])) # (N,C)
         marginal_stats = np.sum(r[...,None]*univariate_gaussian.expectedstats(
             encoder_natparams[:,t] + cavity_natparams[:,None]), axis=1) # (N,2)
@@ -100,7 +111,7 @@ def _local_ep_update(global_stats, encoder_potentials, (fwd_messages, bwd_messag
         obs_message, fwd_message = propagate(fwd_messages, t)
         fwd_messages = replace(fwd_messages, fwd_message, t+1, axis=1)
         obs_messages = replace(obs_messages, obs_message, t, axis=1)
-    for t in xrange(T-1, 0, -1):
+    for t in range(T-1, 0, -1):
         obs_message, bwd_message = propagate(bwd_messages, t)
         bwd_messages = replace(bwd_messages, bwd_message, t-1, axis=1)
         obs_messages = replace(obs_messages, obs_message, t, axis=1)
@@ -114,7 +125,7 @@ def _global_potentials(local_stats):
     assert(b < 0)
     return np.array([a, b])
 
-def local_inference(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
+def local_inference_messages(global_stats, encoder_potentials):
 
     encoder_potentials = \
         np.squeeze(encoder_potentials[0], -1), np.squeeze(encoder_potentials[1], -1), encoder_potentials[2]
@@ -132,7 +143,6 @@ def local_inference(global_prior_natparams, global_natparams, global_stats, enco
         fwd_messages = univariate_gaussian.pack_dense(
             np.concatenate([-.5*global_stats[1]*np.ones((N,1)), -.01*np.ones((N, T-1))], axis=-1),
             np.concatenate([np.zeros((N,1)), .01*npr.randn(N, T-1)], axis=-1))
-        print(global_stats[1])
         univariate_gaussian.logZ(fwd_messages[:,0])
         bwd_messages = univariate_gaussian.pack_dense(
             np.concatenate([-.01*np.ones((N, T-1)), np.zeros((N,1))], axis=-1),
@@ -140,12 +150,14 @@ def local_inference(global_prior_natparams, global_natparams, global_stats, enco
         obs_messages = univariate_gaussian.pack_dense(-.01*np.ones((N, T)), .01*npr.randn(N,T))
         return fwd_messages, bwd_messages, obs_messages
 
-    local_messages = fixed_point(make_fpfun, (global_stats, encoder_potentials), init_x0(), diff, tol=1e-3)
-    print('found fixed point!')
+    return fixed_point(make_fpfun, (global_stats, encoder_potentials), init_x0(), diff, tol=1e-3)
+
+def local_inference(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
+
+    local_messages = local_inference_messages(global_stats, encoder_potentials)
     local_stats = _local_stats(global_stats, local_messages)
 
-    local_samples = _local_samples(global_stats, local_messages, n_samples)
-    print(local_samples[0,0])
+    local_samples = _dense_local_samples(global_stats, local_messages, n_samples)
     global_potentials = _global_potentials(local_stats)
 
     local_kl = _local_kl(unbox(global_stats), local_messages, local_stats)
@@ -155,7 +167,9 @@ def local_inference(global_prior_natparams, global_natparams, global_stats, enco
     return local_samples, unbox(global_potentials), global_kl, local_kl
 
 def _bernoulli_loglike(y, logits):
-    res = np.sum(y*logits - log1pexp(logits))/logits.shape[0]
+    # assert(np.allclose(np.exp(y*logits + np.log1p(-sigmoid(logits))), y*sigmoid(logits) + (1-y)*(1-sigmoid(logits))))
+    y = y == 1
+    res = np.sum(y*logits + np.log1p(-sigmoid(logits)))/logits.shape[0]
     return res
 
 def make_loglike(decoder):
@@ -164,7 +178,7 @@ def make_loglike(decoder):
     return loglike
 
 def init_pgm_natparams(mean, variance):
-    beta = variance/mean
+    beta = mean/variance
     alpha = mean*beta
     return np.array([alpha-1, -beta])
 
