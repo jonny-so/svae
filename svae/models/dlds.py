@@ -17,9 +17,8 @@ def _local_samples(global_stats, local_messages, num_samples):
     return np.stack(samples, axis=-1)[...,None]
 
 def _dense_local_samples(global_stats, local_messages, num_samples):
-    return np.swapaxes(
-        gaussian.natural_sample(
-            _dense_local_natparams(global_stats, local_messages), num_samples), 0, 1)[...,None]
+    return np.swapaxes(gaussian.natural_sample(
+            _dense_local_natparams(global_stats, local_messages), num_samples)[...,None], 1, 2)
 
 def _global_kl(global_prior_natparams, global_natparams):
     stats = gamma.expectedstats(global_natparams)
@@ -155,9 +154,9 @@ def local_inference_messages(global_stats, encoder_potentials):
 def local_inference(global_prior_natparams, global_natparams, global_stats, encoder_potentials, n_samples):
 
     local_messages = local_inference_messages(global_stats, encoder_potentials)
-    local_stats = _local_stats(global_stats, local_messages)
+    local_stats = _local_stats(unbox(global_stats), local_messages)
 
-    local_samples = _dense_local_samples(global_stats, local_messages, n_samples)
+    local_samples = _dense_local_samples(unbox(global_stats), local_messages, n_samples)
     global_potentials = _global_potentials(local_stats)
 
     local_kl = _local_kl(unbox(global_stats), local_messages, local_stats)
@@ -167,9 +166,7 @@ def local_inference(global_prior_natparams, global_natparams, global_stats, enco
     return local_samples, unbox(global_potentials), global_kl, local_kl
 
 def _bernoulli_loglike(y, logits):
-    # assert(np.allclose(np.exp(y*logits + np.log1p(-sigmoid(logits))), y*sigmoid(logits) + (1-y)*(1-sigmoid(logits))))
-    y = y == 1
-    res = np.sum(y*logits + np.log1p(-sigmoid(logits)))/logits.shape[0]
+    res = np.sum(np.expand_dims(y, -2)*logits + np.log1p(-sigmoid(logits)))/logits.shape[-2]
     return res
 
 def make_loglike(decoder):
