@@ -214,8 +214,9 @@ def run_experiment(C, seed):
 
     def callback(i, val, params, grad):
         if i % 10 == 0:
+            global_natparams, gamma, phi = params
             plot(i, val, params, grad)
-            err = validation_error(params[0], encoder, phi, decoder, gamma, y_valid, 100)
+            err = validation_error(global_natparams, encoder, phi, decoder, gamma, y, 100)
             print('{}: elbo={}, err={}'.format(i, val, err))
             elbos[i // 10] = val
             errs[i // 10] = err
@@ -238,8 +239,8 @@ def run_experiment(C, seed):
     np.savetxt(fileprefix + '_errs.txt', errs)
 
 if __name__ == "__main__":
-    run_experiment(2, 0)
-    run_experiment(2, 1)
-    run_experiment(2, 2)
-    run_experiment(2, 3)
-    run_experiment(2, 4)
+    run_experiment(3, 0)
+    run_experiment(3, 1)
+    run_experiment(3, 2)
+    run_experiment(3, 3)
+    run_experiment(3, 4)
