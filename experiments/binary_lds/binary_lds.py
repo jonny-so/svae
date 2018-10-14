@@ -226,7 +226,7 @@ def run_experiment(C, seed):
     gradfun = make_gradfun(
         local_inference, encoder, loglike, global_prior_natparams, pgm_expectedstats, y)
 
-    fileprefix = 'binary_lds/binary_lds_c' + str(C) + '_s' + str(seed)
+    fileprefix = 'binary_lds/results/binary_lds_c' + str(C) + '_s' + str(seed)
 
     params = adam(gradfun(batch_size=50, num_samples=3, natgrad_scale=1e4, callback=callback),
                   params, num_iters=n_iter, step_size=1e-3)
