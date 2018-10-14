@@ -226,10 +226,14 @@ def run_experiment(C, seed):
     gradfun = make_gradfun(
         local_inference, encoder, loglike, global_prior_natparams, pgm_expectedstats, y)
 
+    fileprefix = 'binary_lds/binary_lds_c' + str(C) + '_s' + str(seed)
+
     params = adam(gradfun(batch_size=50, num_samples=3, natgrad_scale=1e4, callback=callback),
                   params, num_iters=n_iter, step_size=1e-3)
+    # params = pickle.load(open(fileprefix + '_params.pkl', 'rb'))
 
-    fileprefix = 'binary_lds/binary_lds_c' + str(C) + '_s' + str(seed)
+    global_natparams, gamma, phi = params
+
     pickle.dump(params, open(fileprefix + '_params.pkl', 'wb'))
     save_encoder_decoder_plot(fileprefix, encoder, phi, decoder, gamma, 0)
     save_encoder_decoder_plot(fileprefix, encoder, phi, decoder, gamma, 1)
@@ -239,8 +243,5 @@ def run_experiment(C, seed):
     np.savetxt(fileprefix + '_errs.txt', errs)
 
 if __name__ == "__main__":
-    run_experiment(3, 0)
-    run_experiment(3, 1)
-    run_experiment(3, 2)
-    run_experiment(3, 3)
-    run_experiment(3, 4)
+    run_experiment(1, 0)
+    run_experiment(2, 0)
