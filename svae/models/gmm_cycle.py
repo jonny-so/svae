@@ -3,7 +3,7 @@ import autograd.numpy.random as npr
 from autograd.misc.fixed_points import fixed_point
 
 from svae.distributions import bernoulli, beta, gaussian, niw
-from svae.util import flat, expand_diagonal, logsumexp, mvp, replace, outer, symmetrize, unbox
+from svae.util import flat, expand_diagonal, logsumexp, mvp, replace, outer, softmax, symmetrize, unbox
 
 def _z_pairstats(z_stats):
     return np.stack([
@@ -83,7 +83,7 @@ def _local_ep_update(global_stats, encoder_potentials, local_messages):
 
     J_rec = -2*expand_diagonal(encoder_potentials[0]) # (T,K,C,N,N)
     h_rec = encoder_potentials[1] # (T,K,C,N)
-    p_rec = encoder_potentials[2] # (T,K,C)
+    p_rec = softmax(encoder_potentials[2]) # (T,K,C)
 
     Psi = np.linalg.inv(J_rec[...,None,None,:,:] + J_prior) # (T,K,C,2,2,N,N)
 

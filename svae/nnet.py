@@ -4,7 +4,7 @@ import autograd.numpy.random as npr
 from autograd.builtins import tuple as tuple_
 from toolz import curry
 
-from util import compose, sigmoid, softmax, log1pexp, isarray
+from util import compose, sigmoid, softmax, log1pexp, isarray, unbox
 
 
 ### util
@@ -50,12 +50,11 @@ def gaussian_info(inputs):
 
 @curry
 def gaussian_info_mix(classes, inputs):
-    mlp_softmax_in = inputs[...,-classes:]
+    mlp_logits = inputs[...,-classes:]
     mlp_mixitem_in = np.reshape(inputs[...,:-classes], inputs.shape[:-1] + (classes,2,-1))
     h = mlp_mixitem_in[...,1,:]
     J = -1./2 * log1pexp(mlp_mixitem_in[...,0,:])
-    p = softmax(mlp_softmax_in)
-    return tuple_((J, h, p))
+    return tuple_((J, h, mlp_logits))
 
 ### multi-layer perceptrons (MLPs)
 
@@ -117,12 +116,12 @@ def _gresnet(mlp_type, mlp, params, inputs):
         return tuple_((J_mlp + J_res, h_mlp + h_res))
     elif mlp_type == 'info_mix':
         d_out = b1.shape[-1]
-        J_mlp, h_mlp, p_mlp = mlp(mlp_params, inputs)
+        J_mlp, h_mlp, logits_mlp = mlp(mlp_params, inputs)
         J_mlp = np.reshape(J_mlp, J_mlp.shape[:-1] + (-1,d_out))
         J_res = -1./2 * log1pexp(b2)
         h_mlp = np.reshape(h_mlp, h_mlp.shape[:-1] + (-1,d_out))
         h_res = unravel(np.dot(ravel(inputs), W) + b1)
-        return tuple_((J_mlp + J_res, h_mlp + h_res[...,None,:], p_mlp))
+        return tuple_((J_mlp + J_res, h_mlp + h_res[...,None,:], logits_mlp))
 
 def init_gresnet(d_in, layer_specs, res_init=rand_partial_isometry):
     d_out = layer_specs[-1][0] // 2

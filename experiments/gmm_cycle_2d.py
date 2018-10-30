@@ -346,7 +346,7 @@ def run_experiment(seed, max_iter, mog_classes):
     params = adam(gradfun(batch_size=50, num_samples=1, natgrad_scale=1e4, callback=callback),
                   params, num_iters=max_iter, step_size=1e-3)
 
-    prefix = './gmm_cycle/gmm_cycle_' + str(max_iter//1000) + 'k_m' + str(mog_classes) + '_s' + str(seed)
+    prefix = './results/gmm_cycle_' + str(max_iter//1000) + 'k_m' + str(mog_classes) + '_s' + str(seed)
     pickle.dump(params, open(prefix + '.pkl', 'wb'))
     save_figures(prefix, global_prior_natparams, params, encoder, decoder, y)
     np.savetxt(prefix + '_elbo.txt', elbos)
